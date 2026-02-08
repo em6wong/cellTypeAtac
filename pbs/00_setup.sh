@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # === EDIT THESE ===
-PROJECT_DIR="/srv/scratch/wonglab/z2253616/cellTypeAtac"
+PROJECT_DIR="/Users/z2253616/Documents/projects/agent/cellTypeAtac"
 GENOME_DIR="/srv/scratch/wonglab/useful/genomes"
 # ==================
 

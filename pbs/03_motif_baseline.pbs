@@ -8,7 +8,7 @@
 #PBS -m ae
 
 # === EDIT THESE ===
-PROJECT_DIR="/Users/z2253616/Documents/projects/agent/cellTypeAtac"
+PROJECT_DIR="/srv/scratch/fabilab/emily/cellTypeAtac"
 # ==================
 
 cd "$PROJECT_DIR"

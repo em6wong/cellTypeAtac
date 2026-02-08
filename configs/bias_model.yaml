@@ -1,0 +1,32 @@
+# Bias model configuration
+# Learns Tn5 sequence preference from background (non-peak) regions
+
+model:
+  channels: 64
+  num_dilated_layers: 4
+  kernel_size: 3
+  input_length: 2114
+  output_length: 1000
+  profile_kernel_size: 75
+  dropout: 0.1
+
+data:
+  genome: "data/genome/mm10.fa"
+  chrom_sizes: "data/genome/mm10.chrom.sizes"
+  peaks_bed: "data/YoungSed_DownSample_Peak.bed"  # Regions to EXCLUDE
+  bigwig: "data/bigwig/merged.bw"
+  num_background_samples: 200000
+
+training:
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.0
+  max_epochs: 20
+  early_stopping_patience: 5
+  profile_weight: 1.0
+  count_weight: 0.5
+  precision: "16-mixed"
+
+chromosome_splits:
+  test: ["chr8", "chr9"]
+  val: ["chr1"]

@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N multi_cell
+#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+#PBS -l walltime=16:00:00
+#PBS -j oe
+#PBS -o logs/08_multicell.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m ae
+
+# === EDIT THESE ===
+PROJECT_DIR="/srv/scratch/wonglab/z2253616/cellTypeAtac"
+# ==================
+
+cd "$PROJECT_DIR"
+source activate celltypeatac
+
+# Initialize from best per-cell-type model (pick the one with lowest val loss)
+# Update this path after step 06 completes
+INIT_CKPT="results/chrombpnet/Cardiomyocyte/best.ckpt"
+
+echo "=== Train Multi-Cell ChromBPNet ==="
+echo "Start: $(date)"
+echo "Init from: $INIT_CKPT"
+
+python scripts/08_train_multi_cell.py \
+    --config configs/chrombpnet.yaml \
+    --init-from "$INIT_CKPT" \
+    --data-dir data/training \
+    --output-dir results/multi_cell \
+    --gpus 1 \
+    --single-ct-training
+
+echo "End: $(date)"

@@ -1,0 +1,34 @@
+name: celltypeatac
+channels:
+  - pytorch
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pytorch>=2.1
+  - pytorch-lightning>=2.0
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - xgboost
+  - pyfaidx
+  - pybigwig
+  - pybedtools
+  - pysam
+  - zarr
+  - h5py
+  - wandb
+  - matplotlib
+  - seaborn
+  - tqdm
+  - einops
+  - pyyaml
+  - jupyter
+  - ipykernel
+  - pytest
+  - pip
+  - pip:
+    - pyjaspar
+    - biopython
+    - MOODS-python

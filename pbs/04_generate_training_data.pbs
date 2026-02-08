@@ -1,0 +1,30 @@
+#!/bin/bash
+#PBS -N gen_data
+#PBS -l select=1:ncpus=4:mem=32gb
+#PBS -l walltime=6:00:00
+#PBS -j oe
+#PBS -o logs/04_gendata.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m ae
+
+# === EDIT THESE ===
+PROJECT_DIR="/srv/scratch/wonglab/z2253616/cellTypeAtac"
+# ==================
+
+cd "$PROJECT_DIR"
+source activate celltypeatac
+
+echo "=== Generate Training Data ==="
+echo "Start: $(date)"
+
+python scripts/04_generate_training_data.py \
+    --peaks data/YoungSed_DownSample_Peak.bed \
+    --bigwig-dir data/bigwig \
+    --genome data/genome/mm10.fa \
+    --chrom-sizes data/genome/mm10.chrom.sizes \
+    --output-dir data/training
+
+echo "End: $(date)"
+echo ""
+echo "Output:"
+du -sh data/training/*/

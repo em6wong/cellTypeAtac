@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -N motif_baseline
+#PBS -l select=1:ncpus=8:mem=32gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+#PBS -o logs/03_motif.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m ae
+
+# === EDIT THESE ===
+PROJECT_DIR="/srv/scratch/wonglab/z2253616/cellTypeAtac"
+# ==================
+
+cd "$PROJECT_DIR"
+source activate celltypeatac
+
+echo "=== Motif Baseline ==="
+echo "Start: $(date)"
+
+python scripts/03_motif_baseline.py \
+    --annotations data/peak_annotations.csv \
+    --genome data/genome/mm10.fa \
+    --output-dir results/motif_baseline
+
+echo "End: $(date)"

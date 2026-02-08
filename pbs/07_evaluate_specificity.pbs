@@ -1,0 +1,27 @@
+#!/bin/bash
+#PBS -N eval_spec
+#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+#PBS -l walltime=2:00:00
+#PBS -j oe
+#PBS -o logs/07_eval.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m ae
+
+# === EDIT THESE ===
+PROJECT_DIR="/srv/scratch/wonglab/z2253616/cellTypeAtac"
+# ==================
+
+cd "$PROJECT_DIR"
+source activate celltypeatac
+
+echo "=== Evaluate Specificity ==="
+echo "Start: $(date)"
+
+python scripts/07_evaluate_specificity.py \
+    --model-dir results/chrombpnet \
+    --data-dir data/training \
+    --annotations data/peak_annotations.csv \
+    --output-dir results/specificity \
+    --device cuda
+
+echo "End: $(date)"

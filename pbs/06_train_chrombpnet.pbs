@@ -1,12 +1,13 @@
 #!/bin/bash
 #PBS -N cbpnet
-#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+#PBS -l select=1:ncpus=8:ngpus=1:gpu_model=H200:mem=64gb
 #PBS -l walltime=12:00:00
+#PBS -A mwac_wonglab
 #PBS -J 0-4
 #PBS -j oe
 #PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/06_cbpnet.log
 #PBS -M z2253616@ad.unsw.edu.au
-#PBS -m ae
+#PBS -m abe
 
 # Array job: trains 5 cell types in parallel (indices 0-4)
 

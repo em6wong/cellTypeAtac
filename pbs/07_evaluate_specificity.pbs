@@ -1,11 +1,12 @@
 #!/bin/bash
 #PBS -N eval_spec
-#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1
+#PBS -l select=1:ncpus=8:ngpus=1:gpu_model=H200:mem=64gb
 #PBS -l walltime=2:00:00
+#PBS -A mwac_wonglab
 #PBS -j oe
 #PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/07_eval.log
 #PBS -M z2253616@ad.unsw.edu.au
-#PBS -m ae
+#PBS -m abe
 
 cd /srv/scratch/fabilab/emily/cellTypeAtac
 source scripts/setup_env.sh

@@ -1,8 +1,8 @@
 ########################################
 # Data & results (NEVER COMMIT)
 ########################################
-data/
-results/
+/data/
+/results/
 output/
 outs/
 scratch/

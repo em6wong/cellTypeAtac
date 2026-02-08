@@ -177,7 +177,7 @@ class MultiCellChromBPNet(nn.Module):
             MultiCellChromBPNet with transferred weights.
         """
         # Load single-cell-type checkpoint
-        state_dict = torch.load(checkpoint_path, map_location="cpu")
+        state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]
 

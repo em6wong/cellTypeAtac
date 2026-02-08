@@ -97,7 +97,10 @@ def sample_background_regions(
     region_width: int = 2114,
     seed: int = 42,
 ) -> pd.DataFrame:
-    """Sample GC-matched background regions avoiding peaks.
+    """Sample random background regions avoiding peaks.
+
+    Regions are sampled proportional to chromosome size with a blacklist
+    around existing peaks to avoid overlap.
 
     Args:
         peaks: DataFrame with chrom, start, end.
@@ -144,6 +147,28 @@ def sample_background_regions(
         attempts += 1
 
     return pd.DataFrame(regions)
+
+
+def _zarr_store(root, name: str, data: np.ndarray):
+    """Create a zarr array from numpy data (zarr v2/v3 compatible)."""
+    try:
+        # zarr v3: create_array with shape, then assign
+        arr = root.create_array(name, shape=data.shape, dtype=data.dtype)
+        arr[:] = data
+    except (TypeError, AttributeError):
+        # zarr v2: create_dataset with data
+        root.create_dataset(name, data=data)
+
+
+def _zarr_zeros(root, name: str, shape, dtype, chunks):
+    """Create a zero-filled zarr array (zarr v2/v3 compatible)."""
+    try:
+        # zarr v3: create_array with fill_value
+        return root.create_array(name, shape=shape, dtype=dtype,
+                                 chunks=chunks, fill_value=0)
+    except (TypeError, AttributeError):
+        # zarr v2: zeros convenience method
+        return root.zeros(name, shape=shape, dtype=dtype, chunks=chunks)
 
 
 def generate_dataset(
@@ -210,18 +235,27 @@ def generate_dataset(
     # Flank for input sequence
     flank = (input_length - output_length) // 2
 
-    # Create zarr store
+    # Create zarr store (compatible with zarr v2 and v3)
     root = zarr.open(output_path, mode="w")
-    root.create_dataset("chrom", data=np.array(all_regions["chrom"].values, dtype="S10"))
-    root.create_dataset("start", data=all_regions["start"].values.astype(np.int64))
-    root.create_dataset("end", data=all_regions["end"].values.astype(np.int64))
-    root.create_dataset("is_peak", data=all_regions["is_peak"].values)
 
-    seqs = root.zeros("sequences", shape=(n_regions, 4, input_length), dtype=np.float32,
-                       chunks=(100, 4, input_length))
-    profiles = root.zeros("profiles", shape=(n_regions, output_length), dtype=np.float32,
-                          chunks=(100, output_length))
-    counts = root.zeros("counts", shape=(n_regions,), dtype=np.float32, chunks=(1000,))
+    # Metadata arrays: create with explicit shape, then write data
+    chrom_data = np.array(all_regions["chrom"].values, dtype="S10")
+    start_data = all_regions["start"].values.astype(np.int64)
+    end_data = all_regions["end"].values.astype(np.int64)
+    is_peak_data = all_regions["is_peak"].values
+
+    _zarr_store(root, "chrom", chrom_data)
+    _zarr_store(root, "start", start_data)
+    _zarr_store(root, "end", end_data)
+    _zarr_store(root, "is_peak", is_peak_data)
+
+    # Large arrays: create zero-filled, populate incrementally
+    seqs = _zarr_zeros(root, "sequences", shape=(n_regions, 4, input_length),
+                       dtype=np.float32, chunks=(100, 4, input_length))
+    profiles = _zarr_zeros(root, "profiles", shape=(n_regions, output_length),
+                           dtype=np.float32, chunks=(100, output_length))
+    counts = _zarr_zeros(root, "counts", shape=(n_regions,),
+                         dtype=np.float32, chunks=(1000,))
 
     # Extract data for each region
     for idx in tqdm(range(n_regions), desc="Generating dataset"):

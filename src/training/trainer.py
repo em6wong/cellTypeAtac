@@ -200,13 +200,13 @@ class MultiCellModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         if self.single_ct_training:
-            # Random cell type per batch
+            # Random cell type per batch (Scooby-style)
             ct_idx = torch.randint(0, self.num_cell_types, (1,)).item()
             out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
             losses = self.single_loss_fn(
                 out["profile"], out["count"],
-                batch["profile"][:, ct_idx] if batch["profile"].dim() > 2 else batch["profile"],
-                batch["count"][:, ct_idx] if batch["count"].dim() > 1 else batch["count"],
+                batch["profile"][:, ct_idx],
+                batch["count"][:, ct_idx],
             )
         else:
             out = self.model(batch["sequence"])
@@ -220,24 +220,21 @@ class MultiCellModule(pl.LightningModule):
         return losses["loss"]
 
     def validation_step(self, batch, batch_idx):
-        # Always validate on all cell types
-        out = self.model(batch["sequence"])
-
-        if batch["profile"].dim() > 2:
+        # Validate using same strategy as training
+        if self.single_ct_training:
+            ct_idx = torch.randint(0, self.num_cell_types, (1,)).item()
+            out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
+            losses = self.single_loss_fn(
+                out["profile"], out["count"],
+                batch["profile"][:, ct_idx],
+                batch["count"][:, ct_idx],
+            )
+        else:
+            out = self.model(batch["sequence"])
             losses = self.multi_loss_fn(
                 out["profile"], out["count"],
                 batch["profile"], batch["count"],
             )
-        else:
-            # Single cell type val data — evaluate one at a time
-            losses = {"loss": torch.tensor(0.0, device=self.device)}
-            for ct_idx in range(self.num_cell_types):
-                ct_losses = self.single_loss_fn(
-                    out["profile"][:, ct_idx, :], out["count"][:, ct_idx],
-                    batch["profile"], batch["count"],
-                )
-                losses["loss"] = losses["loss"] + ct_losses["loss"]
-            losses["loss"] = losses["loss"] / self.num_cell_types
 
         for k, v in losses.items():
             self.log(f"val/{k}", v, prog_bar=(k == "loss"))

@@ -22,14 +22,25 @@ def main():
         default="data/YoungSed_DownSample_Peak_logCPM_CellType_Mouse.csv",
     )
     parser.add_argument("--fdr-threshold", type=float, default=0.05)
+    parser.add_argument("--tau-specific", type=float, default=0.6,
+                        help="Tau threshold for specific peaks")
+    parser.add_argument("--tau-shared", type=float, default=0.3,
+                        help="Tau threshold for shared peaks")
     parser.add_argument("--output", type=str, default="data/peak_annotations.csv")
     args = parser.parse_args()
 
     print("Running differential accessibility analysis...")
     print(f"  Input: {args.mouse_csv}")
     print(f"  FDR threshold: {args.fdr_threshold}")
+    print(f"  Tau specific: {args.tau_specific}")
+    print(f"  Tau shared: {args.tau_shared}")
 
-    annotations = differential_analysis(args.mouse_csv, fdr_threshold=args.fdr_threshold)
+    annotations = differential_analysis(
+        args.mouse_csv,
+        fdr_threshold=args.fdr_threshold,
+        tau_specific=args.tau_specific,
+        tau_shared=args.tau_shared,
+    )
 
     # Save
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

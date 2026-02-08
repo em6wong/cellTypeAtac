@@ -31,11 +31,8 @@ def _parse_mouse_columns(columns: list) -> dict:
     for col in columns:
         if col == "":
             continue
-        for raw_ct, mapped_ct in [("Coronary.EC", "Coronary_EC")]:
-            col_check = col.replace(raw_ct, mapped_ct)
-            break
-        else:
-            col_check = col
+        # Normalize column name: CSV uses dots (Coronary.EC), we use underscores
+        col_check = col.replace("Coronary.EC", "Coronary_EC")
 
         for ct in CELL_TYPES:
             if col_check.endswith(f"_{ct}"):
@@ -70,12 +67,16 @@ def compute_tau(expression_matrix: np.ndarray) -> np.ndarray:
 def differential_analysis(
     mouse_csv_path: str,
     fdr_threshold: float = 0.05,
+    tau_specific: float = 0.6,
+    tau_shared: float = 0.3,
 ) -> pd.DataFrame:
     """Run differential accessibility analysis on per-mouse logCPM data.
 
     Args:
         mouse_csv_path: Path to YoungSed_DownSample_Peak_logCPM_CellType_Mouse.csv
         fdr_threshold: FDR cutoff for significance.
+        tau_specific: Tau threshold above which a peak is considered specific.
+        tau_shared: Tau threshold below which a peak is considered shared.
 
     Returns:
         DataFrame with columns: peak_id, chrom, start, end, tau,
@@ -160,10 +161,10 @@ def differential_analysis(
         best_fdr = pairwise_fdr[i, best_ct_idx]
 
         # Classify
-        if tau[i] > 0.6 and best_fdr < fdr_threshold and best_fc > 0:
+        if tau[i] > tau_specific and best_fdr < fdr_threshold and best_fc > 0:
             category = "specific"
             specific_ct = best_ct
-        elif tau[i] < 0.3:
+        elif tau[i] < tau_shared:
             category = "shared"
             specific_ct = "none"
         else:

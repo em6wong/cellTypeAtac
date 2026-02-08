@@ -67,7 +67,7 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
     bias_ckpt = bias_cfg["checkpoint"]
     if Path(bias_ckpt).exists():
         print(f"Loading bias model from {bias_ckpt}")
-        state = torch.load(bias_ckpt, map_location="cpu")
+        state = torch.load(bias_ckpt, map_location="cpu", weights_only=False)
         if "state_dict" in state:
             # Lightning checkpoint
             bias_state = {k.replace("model.", ""): v

@@ -97,7 +97,7 @@ def profile_jsd(
 
 def specificity_auc(
     predictions: Dict[str, np.ndarray],
-    peak_annotations: "pd.DataFrame",
+    aligned_annotations: "pd.DataFrame",
     metric: str = "count",
 ) -> Dict[str, float]:
     """Cross-model specificity AUC.
@@ -105,21 +105,34 @@ def specificity_auc(
     For each cell-type specific peak, checks whether the "correct" model
     predicts higher signal than other models.
 
+    IMPORTANT: aligned_annotations must be pre-aligned with prediction arrays.
+    Row i of aligned_annotations must correspond to predictions[ct][i] for all
+    cell types. The caller is responsible for building this alignment (e.g. by
+    matching zarr coordinates to annotation coordinates).
+
     Args:
         predictions: Dict mapping cell_type -> predicted values.
-            For 'count' metric: (n_peaks,) arrays.
-            For 'profile' metric: (n_peaks, length) arrays.
-        peak_annotations: DataFrame with 'specific_celltype' and 'category'.
+            For 'count' metric: (n_regions,) arrays.
+            For 'profile' metric: (n_regions, length) arrays.
+        aligned_annotations: DataFrame with 'specific_celltype' and 'category'
+            columns, pre-aligned so row i matches predictions position i.
+            Rows without annotations (background regions) should have
+            category != 'specific'.
         metric: 'count' or 'profile_sum'.
 
     Returns:
         Dict with per-cell-type AUC and overall AUC.
     """
-    import pandas as pd
-
     cell_types = list(predictions.keys())
-    specific = peak_annotations[peak_annotations["category"] == "specific"]
+    n_preds = len(next(iter(predictions.values())))
+    annotations = aligned_annotations.reset_index(drop=True)
 
+    assert len(annotations) == n_preds, (
+        f"Annotations ({len(annotations)}) must match prediction length ({n_preds}). "
+        f"Pass pre-aligned annotations, not the full annotations file."
+    )
+
+    specific = annotations[annotations["category"] == "specific"]
     results = {}
 
     for ct in cell_types:
@@ -130,22 +143,24 @@ def specificity_auc(
 
         indices = ct_peaks.index.values
 
-        # For each peak, check if the correct model predicts highest
         correct_scores = []
         other_scores = []
 
         for idx in indices:
             if metric == "count":
-                ct_score = predictions[ct][idx]
-                other = [predictions[c][idx] for c in cell_types if c != ct]
+                ct_score = float(predictions[ct][idx])
+                other = [float(predictions[c][idx]) for c in cell_types if c != ct]
             else:  # profile_sum
-                ct_score = predictions[ct][idx].sum()
-                other = [predictions[c][idx].sum() for c in cell_types if c != ct]
+                ct_score = float(predictions[ct][idx].sum())
+                other = [float(predictions[c][idx].sum()) for c in cell_types if c != ct]
 
             correct_scores.append(ct_score)
             other_scores.extend(other)
 
-        # Binary AUC: correct model's score vs. all other models' scores
+        if len(correct_scores) == 0:
+            results[ct] = 0.5
+            continue
+
         y_true = np.concatenate([np.ones(len(correct_scores)),
                                   np.zeros(len(other_scores))])
         y_score = np.concatenate([correct_scores, other_scores])
@@ -157,7 +172,6 @@ def specificity_auc(
 
         results[ct] = float(auc)
 
-    # Overall AUC
     all_aucs = list(results.values())
     results["overall"] = float(np.mean(all_aucs))
 

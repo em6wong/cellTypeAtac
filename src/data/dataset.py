@@ -2,6 +2,7 @@
 
 Provides:
   - ATACDataset: loads from zarr, returns (sequence, profile, count) tuples
+  - MultiCellATACDataset: loads profiles from all cell types for the same regions
   - Supports reverse complement augmentation
   - Supports chromosome-based train/val/test splits
 """
@@ -136,4 +137,72 @@ class BiasDataset(Dataset):
             "sequence": torch.from_numpy(sequence),
             "profile": torch.from_numpy(profile),
             "count": torch.tensor(count, dtype=torch.float32),
+        }
+
+
+class MultiCellATACDataset(Dataset):
+    """Dataset that loads profiles from all cell types for the same regions.
+
+    All cell-type zarr stores must share the same regions in the same order
+    (generated from the same peaks BED). Returns stacked multi-CT targets.
+
+    Each sample provides:
+        sequence: (4, input_length) one-hot DNA (from first cell type)
+        profile: (n_cell_types, output_length) stacked profiles
+        count: (n_cell_types,) stacked counts
+
+    Args:
+        zarr_paths: List of paths to per-cell-type zarr stores (ordered by CT).
+        split: 'train', 'val', or 'test' for chromosome filtering.
+        augment_rc: Apply reverse complement augmentation (50% prob).
+    """
+
+    def __init__(
+        self,
+        zarr_paths: List[str],
+        split: Optional[str] = None,
+        augment_rc: bool = False,
+    ):
+        self.roots = [zarr.open(p, mode="r") for p in zarr_paths]
+        self.augment_rc = augment_rc
+        self.n_cell_types = len(zarr_paths)
+
+        # Use first zarr for chromosome filtering (all share same regions)
+        chroms = np.array([c.decode() if isinstance(c, bytes) else c
+                          for c in self.roots[0]["chrom"][:]])
+
+        if split is not None and split in CHROM_SPLITS:
+            valid_chroms = CHROM_SPLITS[split]
+            self.indices = np.where([c in valid_chroms for c in chroms])[0]
+        else:
+            self.indices = np.arange(len(chroms))
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __getitem__(self, idx: int) -> dict:
+        real_idx = self.indices[idx]
+
+        # Sequence from first cell type (shared across all)
+        sequence = self.roots[0]["sequences"][real_idx]  # (4, input_length)
+
+        # Stack profiles and counts from all cell types
+        profiles = []
+        counts = []
+        for root in self.roots:
+            profiles.append(root["profiles"][real_idx])
+            counts.append(root["counts"][real_idx])
+
+        profile = np.stack(profiles, axis=0)  # (n_cell_types, output_length)
+        count = np.array(counts, dtype=np.float32)  # (n_cell_types,)
+
+        # Reverse complement augmentation
+        if self.augment_rc and np.random.random() < 0.5:
+            sequence = reverse_complement(sequence)
+            profile = profile[:, ::-1].copy()
+
+        return {
+            "sequence": torch.from_numpy(sequence),
+            "profile": torch.from_numpy(profile),
+            "count": torch.from_numpy(count),
         }

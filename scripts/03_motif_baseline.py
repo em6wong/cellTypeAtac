@@ -24,7 +24,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import pyfaidx
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GroupKFold
 from sklearn.metrics import roc_auc_score, accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
@@ -149,7 +149,7 @@ def build_feature_matrix(
     genome: pyfaidx.Fasta,
     motif_list: list,
     window_size: int = WINDOW_SIZE,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build motif score feature matrix for specific peaks.
 
     Args:
@@ -162,6 +162,7 @@ def build_feature_matrix(
         X: (n_peaks, n_motifs) feature matrix.
         y: (n_peaks,) cell type labels (encoded).
         peak_ids: Array of peak IDs.
+        chroms: Array of chromosome names (for grouped CV).
     """
     specific = annotations[annotations["category"] == "specific"].reset_index(drop=True)
     n_peaks = len(specific)
@@ -172,6 +173,7 @@ def build_feature_matrix(
     X = np.zeros((n_peaks, n_motifs), dtype=np.float32)
     y = np.array([CELL_TYPES.index(ct) for ct in specific["specific_celltype"]])
     peak_ids = specific["peak_id"].values
+    chroms = specific["chrom"].values
 
     for i in range(n_peaks):
         row = specific.iloc[i]
@@ -190,21 +192,24 @@ def build_feature_matrix(
         if (i + 1) % 1000 == 0:
             print(f"  Scored {i+1}/{n_peaks} peaks...")
 
-    return X, y, peak_ids
+    return X, y, peak_ids, chroms
 
 
 def train_binary_classifiers(
     X: np.ndarray,
     y: np.ndarray,
-    annotations: pd.DataFrame,
+    chroms: np.ndarray,
     n_folds: int = 5,
 ) -> Dict:
-    """Train per-cell-type binary classifiers with chromosome-based CV.
+    """Train per-cell-type binary classifiers with chromosome-grouped CV.
+
+    Splits are by chromosome to prevent leakage from nearby peaks on
+    the same chromosome appearing in both train and validation.
 
     Args:
         X: Feature matrix (n_peaks, n_motifs).
         y: Cell type labels.
-        annotations: Full annotations (for chromosome info).
+        chroms: Chromosome names per peak (for grouped CV).
         n_folds: Number of CV folds.
 
     Returns:
@@ -214,7 +219,7 @@ def train_binary_classifiers(
         raise ImportError("xgboost required. Install: conda install xgboost")
 
     results = {}
-    specific = annotations[annotations["category"] == "specific"].reset_index(drop=True)
+    cv = GroupKFold(n_splits=n_folds)
 
     for ct_idx, ct in enumerate(CELL_TYPES):
         print(f"\n--- {ct} vs. rest ---")
@@ -229,12 +234,10 @@ def train_binary_classifiers(
             results[ct] = {"auc": 0.0, "top_motifs": []}
             continue
 
-        # Stratified CV
-        cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
         aucs = []
         feature_importances = np.zeros(X.shape[1])
 
-        for fold, (train_idx, val_idx) in enumerate(cv.split(X, y_binary)):
+        for fold, (train_idx, val_idx) in enumerate(cv.split(X, y_binary, groups=chroms)):
             model = xgb.XGBClassifier(
                 n_estimators=200,
                 max_depth=6,
@@ -272,9 +275,12 @@ def train_multiclass_classifier(
     X: np.ndarray,
     y: np.ndarray,
     motif_names: list,
+    chroms: np.ndarray,
     n_folds: int = 5,
 ) -> Dict:
     """Train multi-class classifier: which cell type is this peak specific to?
+
+    Uses chromosome-grouped CV to prevent leakage.
 
     Returns:
         Dict with accuracy, per-class metrics, and top motifs.
@@ -282,11 +288,11 @@ def train_multiclass_classifier(
     if not HAS_XGBOOST:
         raise ImportError("xgboost required")
 
-    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+    cv = GroupKFold(n_splits=n_folds)
     accuracies = []
     feature_importances = np.zeros(X.shape[1])
 
-    for fold, (train_idx, val_idx) in enumerate(cv.split(X, y)):
+    for fold, (train_idx, val_idx) in enumerate(cv.split(X, y, groups=chroms)):
         model = xgb.XGBClassifier(
             n_estimators=200,
             max_depth=6,
@@ -348,7 +354,7 @@ def main():
 
     # Build feature matrix
     print("\nBuilding feature matrix...")
-    X, y, peak_ids = build_feature_matrix(annotations, genome, motif_list, args.window_size)
+    X, y, peak_ids, chroms = build_feature_matrix(annotations, genome, motif_list, args.window_size)
 
     # Save feature matrix
     np.savez(
@@ -360,13 +366,13 @@ def main():
     print("\n" + "="*60)
     print("Per-cell-type binary classifiers (specific vs. rest)")
     print("="*60)
-    binary_results = train_binary_classifiers(X, y, annotations)
+    binary_results = train_binary_classifiers(X, y, chroms)
 
     # Train multi-class classifier
     print("\n" + "="*60)
     print("Multi-class classifier (which cell type?)")
     print("="*60)
-    multi_results = train_multiclass_classifier(X, y, motif_names)
+    multi_results = train_multiclass_classifier(X, y, motif_names, chroms)
     print(f"Accuracy: {multi_results['accuracy']:.3f} ± {multi_results['accuracy_std']:.3f}")
     print(f"\nTop 10 motifs:")
     for name, imp in multi_results["top_motifs"][:10]:

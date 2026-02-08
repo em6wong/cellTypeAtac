@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, ConcatDataset
 
 from src.models.multi_cell_chrombpnet import MultiCellChromBPNet
 from src.training.trainer import MultiCellModule
-from src.data.dataset import ATACDataset
+from src.data.dataset import MultiCellATACDataset
 
 
 CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Pericytes"]
@@ -86,34 +86,33 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
 
-    # Datasets: combine all cell types
-    # For single-CT training, we use the first cell type's data as the
-    # sequence source (all cell types share the same peaks/regions)
+    # Datasets: load profiles from ALL cell types for the same regions
     data_dir = Path(args.data_dir)
 
-    # Use the first available cell type's data
-    train_datasets = []
-    val_datasets = []
-
+    # Collect zarr paths for all cell types (must all exist)
+    train_zarrs = []
+    val_zarrs = []
     for ct in CELL_TYPES:
         ct_train = data_dir / ct / "train.zarr"
         ct_val = data_dir / ct / "val.zarr"
-        if ct_train.exists():
-            train_datasets.append(ATACDataset(
-                str(ct_train), split="train",
-                augment_rc=train_cfg.get("reverse_complement_augment", True),
-            ))
+        if not ct_train.exists():
+            print(f"ERROR: Missing training data for {ct}: {ct_train}")
+            return
+        train_zarrs.append(str(ct_train))
         if ct_val.exists():
-            val_datasets.append(ATACDataset(str(ct_val), split="val"))
+            val_zarrs.append(str(ct_val))
 
-    if not train_datasets:
-        print("ERROR: No training data found!")
-        return
+    if len(val_zarrs) != len(CELL_TYPES):
+        print("WARNING: Not all cell types have validation data, disabling validation")
+        val_zarrs = []
 
-    # Use first cell type's data (regions are shared)
-    train_ds = train_datasets[0]
-    val_ds = val_datasets[0] if val_datasets else None
+    train_ds = MultiCellATACDataset(
+        train_zarrs, split="train",
+        augment_rc=train_cfg.get("reverse_complement_augment", True),
+    )
+    val_ds = MultiCellATACDataset(val_zarrs, split="val") if val_zarrs else None
 
+    print(f"Cell types: {len(CELL_TYPES)}")
     print(f"Train samples: {len(train_ds):,}")
     if val_ds:
         print(f"Val samples: {len(val_ds):,}")

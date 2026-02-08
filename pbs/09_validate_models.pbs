@@ -1,0 +1,78 @@
+#!/bin/bash
+#PBS -N validate
+#PBS -l select=1:ncpus=8:ngpus=1:gpu_model=H200:mem=64gb
+#PBS -l walltime=2:00:00
+#PBS -A mwac_wonglab
+#PBS -j oe
+#PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/09_validate.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m abe
+
+# ============================================================================
+# Model Validation for cellTypeAtac
+#
+# Validates per-cell-type (Stage 2) and multi-cell (Stage 3) models.
+#
+# Generates:
+#   - Correlation metrics (profile r, count r, JSD) per cell type
+#   - Known marker gene specificity checks
+#   - Collapse detection for multi-cell model
+#   - Profile plots (predicted vs actual)
+#   - Scatter plots (predicted vs actual counts)
+#   - Stage 2 vs Stage 3 comparison
+#
+# Usage:
+#   qsub pbs/09_validate_models.pbs                           # Validate both stages
+#   qsub -v STAGE=2 pbs/09_validate_models.pbs               # Stage 2 only
+#   qsub -v STAGE=3 pbs/09_validate_models.pbs               # Stage 3 only
+#   qsub -v MAX_SAMPLES=1000 pbs/09_validate_models.pbs      # More samples
+#   qsub -v MULTI_CKPT=results/multi_cell/best.ckpt pbs/09_validate_models.pbs
+# ============================================================================
+
+cd /srv/scratch/fabilab/emily/cellTypeAtac
+source scripts/setup_env.sh
+
+STAGE=${STAGE:-"both"}
+MODEL_DIR=${MODEL_DIR:-"results/chrombpnet"}
+MULTI_CKPT=${MULTI_CKPT:-"results/multi_cell/best.ckpt"}
+DATA_DIR=${DATA_DIR:-"data/training"}
+GENOME=${GENOME:-"data/genome/mm10.fa"}
+ANNOTATIONS=${ANNOTATIONS:-"data/peak_annotations.csv"}
+OUTPUT_DIR=${OUTPUT_DIR:-"results/validation"}
+MAX_SAMPLES=${MAX_SAMPLES:-500}
+
+echo "=========================================="
+echo "Job ID: ${PBS_JOBID}"
+echo "Node: $(hostname)"
+echo "Start: $(date)"
+echo "=========================================="
+echo "Configuration:"
+echo "  Stage: ${STAGE}"
+echo "  Model dir: ${MODEL_DIR}"
+echo "  Multi-cell ckpt: ${MULTI_CKPT}"
+echo "  Data dir: ${DATA_DIR}"
+echo "  Output dir: ${OUTPUT_DIR}"
+echo "  Max samples: ${MAX_SAMPLES}"
+echo "=========================================="
+
+python scripts/09_validate_models.py \
+    --stage "${STAGE}" \
+    --model-dir "${MODEL_DIR}" \
+    --checkpoint "${MULTI_CKPT}" \
+    --data-dir "${DATA_DIR}" \
+    --genome "${GENOME}" \
+    --annotations "${ANNOTATIONS}" \
+    --output-dir "${OUTPUT_DIR}" \
+    --max-samples "${MAX_SAMPLES}" \
+    --device cuda
+
+echo ""
+echo "=========================================="
+echo "Validation complete!"
+echo "Results: ${OUTPUT_DIR}"
+echo "End: $(date)"
+echo "=========================================="
+
+echo ""
+echo "Generated files:"
+ls -la "${OUTPUT_DIR}/"

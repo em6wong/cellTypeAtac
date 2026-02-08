@@ -92,6 +92,21 @@ def main():
         mode="min",
     )
 
+    # WandB logger
+    logger = None
+    wandb_cfg = config.get("wandb", {})
+    if wandb_cfg.get("project"):
+        try:
+            from pytorch_lightning.loggers import WandbLogger
+            logger = WandbLogger(
+                project=wandb_cfg["project"],
+                entity=wandb_cfg.get("entity"),
+                name="bias_model",
+                save_dir=str(out_dir),
+            )
+        except ImportError:
+            pass
+
     # Trainer
     trainer = pl.Trainer(
         max_epochs=train_cfg["max_epochs"],
@@ -100,6 +115,7 @@ def main():
         precision=train_cfg.get("precision", "16-mixed"),
         callbacks=[checkpoint_cb, early_stop_cb],
         default_root_dir=out_dir,
+        logger=logger,
         log_every_n_steps=50,
     )
 

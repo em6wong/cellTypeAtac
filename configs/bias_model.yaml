@@ -30,3 +30,7 @@ training:
 chromosome_splits:
   test: ["chr8", "chr9"]
   val: ["chr1"]
+
+wandb:
+  project: "celltype-atac"
+  entity: null

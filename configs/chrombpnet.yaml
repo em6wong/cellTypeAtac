@@ -38,5 +38,5 @@ chromosome_splits:
   val: ["chr1"]
 
 wandb:
-  project: "celltypeatac"
+  project: "celltype-atac"
   entity: null

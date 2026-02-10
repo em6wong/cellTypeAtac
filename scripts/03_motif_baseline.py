@@ -16,6 +16,8 @@ Usage:
 
 import argparse
 import json
+import multiprocessing as mp
+from functools import partial
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -144,19 +146,41 @@ def score_sequence_motifs(
     return scores
 
 
+def _score_peak_worker(args):
+    """Worker function for parallel motif scoring.
+
+    Args:
+        args: Tuple of (genome_path, chrom, center, window_size, motif_list).
+
+    Returns:
+        Array of motif scores for one peak.
+    """
+    genome_path, chrom, center, window_size, motif_list = args
+    genome = pyfaidx.Fasta(genome_path)
+    start = max(0, center - window_size // 2)
+    end = start + window_size
+    try:
+        seq = str(genome[chrom][start:end])
+    except (KeyError, ValueError):
+        return np.zeros(len(motif_list), dtype=np.float32)
+    return score_sequence_motifs(seq, motif_list)
+
+
 def build_feature_matrix(
     annotations: pd.DataFrame,
-    genome: pyfaidx.Fasta,
+    genome_path: str,
     motif_list: list,
     window_size: int = WINDOW_SIZE,
+    n_workers: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build motif score feature matrix for specific peaks.
 
     Args:
         annotations: Peak annotations with category and specific_celltype.
-        genome: Reference genome.
+        genome_path: Path to reference genome FASTA.
         motif_list: JASPAR motifs.
         window_size: Sequence window centered on peak.
+        n_workers: Number of parallel workers (default: 1).
 
     Returns:
         X: (n_peaks, n_motifs) feature matrix.
@@ -169,28 +193,45 @@ def build_feature_matrix(
     n_motifs = len(motif_list)
 
     print(f"Building feature matrix: {n_peaks} specific peaks × {n_motifs} motifs")
+    print(f"  Using {n_workers} workers")
 
-    X = np.zeros((n_peaks, n_motifs), dtype=np.float32)
     y = np.array([CELL_TYPES.index(ct) for ct in specific["specific_celltype"]])
     peak_ids = specific["peak_id"].values
     chroms = specific["chrom"].values
 
+    # Prepare worker args
+    work_items = []
     for i in range(n_peaks):
         row = specific.iloc[i]
-        chrom = row["chrom"]
         center = (row["start"] + row["end"]) // 2
-        start = max(0, center - window_size // 2)
-        end = start + window_size
+        work_items.append((genome_path, row["chrom"], center, window_size, motif_list))
 
-        try:
-            seq = str(genome[chrom][start:end])
-        except (KeyError, ValueError):
-            continue
-
-        X[i] = score_sequence_motifs(seq, motif_list)
-
-        if (i + 1) % 1000 == 0:
-            print(f"  Scored {i+1}/{n_peaks} peaks...")
+    if n_workers > 1:
+        with mp.Pool(n_workers) as pool:
+            results = []
+            for i, result in enumerate(pool.imap(
+                _score_peak_worker, work_items, chunksize=100,
+            )):
+                results.append(result)
+                if (i + 1) % 5000 == 0:
+                    print(f"  Scored {i+1}/{n_peaks} peaks...")
+            X = np.array(results, dtype=np.float32)
+    else:
+        genome = pyfaidx.Fasta(genome_path)
+        X = np.zeros((n_peaks, n_motifs), dtype=np.float32)
+        for i in range(n_peaks):
+            row = specific.iloc[i]
+            chrom = row["chrom"]
+            center = (row["start"] + row["end"]) // 2
+            start = max(0, center - window_size // 2)
+            end = start + window_size
+            try:
+                seq = str(genome[chrom][start:end])
+            except (KeyError, ValueError):
+                continue
+            X[i] = score_sequence_motifs(seq, motif_list)
+            if (i + 1) % 1000 == 0:
+                print(f"  Scored {i+1}/{n_peaks} peaks...")
 
     return X, y, peak_ids, chroms
 
@@ -328,6 +369,8 @@ def main():
     parser.add_argument("--genome", type=str, default="data/genome/mm10.fa")
     parser.add_argument("--output-dir", type=str, default="results/motif_baseline")
     parser.add_argument("--window-size", type=int, default=WINDOW_SIZE)
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel workers for motif scanning")
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -345,16 +388,16 @@ def main():
         print("Check peak annotations or adjust tau/FDR thresholds.")
         return
 
-    print("\nLoading genome...")
-    genome = pyfaidx.Fasta(args.genome)
-
     print("\nLoading JASPAR motifs...")
     motif_list = load_jaspar_motifs()
     motif_names = [name for name, _ in motif_list]
 
     # Build feature matrix
-    print("\nBuilding feature matrix...")
-    X, y, peak_ids, chroms = build_feature_matrix(annotations, genome, motif_list, args.window_size)
+    n_workers = args.workers
+    print(f"\nBuilding feature matrix (workers={n_workers})...")
+    X, y, peak_ids, chroms = build_feature_matrix(
+        annotations, args.genome, motif_list, args.window_size, n_workers=n_workers,
+    )
 
     # Save feature matrix
     np.savez(

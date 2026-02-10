@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N motif_baseline
 #PBS -l select=1:ncpus=8:mem=32gb
-#PBS -l walltime=12:00:00
+#PBS -l walltime=24:00:00
 #PBS -j oe
 #PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/03_motif.log
 #PBS -M z2253616@ad.unsw.edu.au
@@ -19,6 +19,7 @@ echo "Annotations: ${ANNOTATIONS}"
 python scripts/03_motif_baseline.py \
     --annotations "${ANNOTATIONS}" \
     --genome data/genome/mm10.fa \
-    --output-dir results/motif_baseline
+    --output-dir results/motif_baseline \
+    --workers 8
 
 echo "End: $(date)"

@@ -2,6 +2,7 @@
 #PBS -N gen_data
 #PBS -l select=1:ncpus=8:mem=64gb
 #PBS -l walltime=24:00:00
+#PBS -A mwac_wonglab
 #PBS -j oe
 #PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/04_gendata.log
 #PBS -M z2253616@ad.unsw.edu.au

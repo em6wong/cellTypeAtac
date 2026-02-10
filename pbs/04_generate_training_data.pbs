@@ -10,11 +10,14 @@
 cd /srv/scratch/fabilab/emily/cellTypeAtac
 source scripts/setup_env.sh
 
+PEAKS=${PEAKS:-"data/peaks_downsampled/merged_peaks.bed"}
+
 echo "=== Generate Training Data ==="
 echo "Start: $(date)"
+echo "Peaks: ${PEAKS}"
 
 python scripts/04_generate_training_data.py \
-    --peaks data/YoungSed_DownSample_Peak.bed \
+    --peaks "${PEAKS}" \
     --bigwig-dir data/bigwig \
     --genome data/genome/mm10.fa \
     --chrom-sizes data/genome/mm10.chrom.sizes \

@@ -16,7 +16,8 @@ fragments:
   pattern: "{cell_type}_downsample.bed"
 
 peaks:
-  merged_bed: "data/YoungSed_DownSample_Peak.bed"
+  merged_bed: "data/peaks_downsampled/merged_peaks.bed"
+  original_bed: "data/YoungSed_DownSample_Peak.bed"  # original (called on all cells)
   logcpm_celltype: "data/YoungSed_DownSample_Peak_logCPM_CellType.csv"
   logcpm_mouse: "data/YoungSed_DownSample_Peak_logCPM_CellType_Mouse.csv"
 

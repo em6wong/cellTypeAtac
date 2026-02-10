@@ -1,0 +1,72 @@
+#!/bin/bash
+#PBS -N call_peaks
+#PBS -l select=1:ncpus=4:mem=32gb
+#PBS -l walltime=2:00:00
+#PBS -A mwac_wonglab
+#PBS -j oe
+#PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/call_peaks_downsampled.log
+#PBS -M z2253616@ad.unsw.edu.au
+#PBS -m abe
+
+# ============================================================================
+# Call peaks on downsampled fragments using MACS2
+#
+# Re-calls peaks using only the downsampled fragment files (625 nuclei/type)
+# to remove bias from the original peak set which was called on all cells
+# (where CM and Fibroblast had many more cells).
+#
+# Prerequisites:
+#   conda install -c bioconda macs2    (one-time setup)
+#
+# Usage:
+#   qsub pbs/call_peaks_downsampled.pbs
+#   qsub -v QVALUE=0.01 pbs/call_peaks_downsampled.pbs     # Stricter
+#   qsub -v MERGE_DIST=500 pbs/call_peaks_downsampled.pbs  # Wider merge
+# ============================================================================
+
+cd /srv/scratch/fabilab/emily/cellTypeAtac
+source scripts/setup_env.sh
+
+# Check MACS2 is installed
+if ! command -v macs2 &> /dev/null; then
+    echo "ERROR: macs2 not found. Install with: conda install -c bioconda macs2"
+    exit 1
+fi
+
+QVALUE=${QVALUE:-0.01}
+MERGE_DIST=${MERGE_DIST:-200}
+OUTPUT_DIR=${OUTPUT_DIR:-"data/peaks_downsampled"}
+
+echo "=========================================="
+echo "Job ID: ${PBS_JOBID}"
+echo "Node: $(hostname)"
+echo "Start: $(date)"
+echo "=========================================="
+echo "Configuration:"
+echo "  Q-value threshold: ${QVALUE}"
+echo "  Merge distance: ${MERGE_DIST}bp"
+echo "  Output: ${OUTPUT_DIR}"
+echo "  MACS2: $(macs2 --version 2>&1)"
+echo "=========================================="
+
+python scripts/call_peaks_downsampled.py \
+    --fragments-dir data \
+    --output-dir "${OUTPUT_DIR}" \
+    --chrom-sizes data/genome/mm10.chrom.sizes \
+    --qvalue "${QVALUE}" \
+    --merge-distance "${MERGE_DIST}" \
+    --original-peaks data/YoungSed_DownSample_Peak.bed
+
+echo ""
+echo "=========================================="
+echo "Peak calling complete!"
+echo "End: $(date)"
+echo "=========================================="
+
+echo ""
+echo "Output files:"
+ls -lh "${OUTPUT_DIR}/"
+echo ""
+echo "To use new peaks, update subsequent scripts:"
+echo "  02: python scripts/02_define_specific_peaks.py --peaks-bed ${OUTPUT_DIR}/merged_peaks.bed"
+echo "  04: python scripts/04_generate_training_data.py with new peak BED"

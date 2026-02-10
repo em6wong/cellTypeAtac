@@ -3,7 +3,7 @@
 
 Usage:
     python scripts/04_generate_training_data.py \
-        --peaks data/YoungSed_DownSample_Peak.bed \
+        --peaks data/peaks_downsampled/merged_peaks.bed \
         --bigwig-dir data/bigwig \
         --genome data/genome/mm10.fa \
         --chrom-sizes data/genome/mm10.chrom.sizes \
@@ -23,7 +23,7 @@ CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Peric
 
 def main():
     parser = argparse.ArgumentParser(description="Generate training zarr datasets")
-    parser.add_argument("--peaks", type=str, default="data/YoungSed_DownSample_Peak.bed")
+    parser.add_argument("--peaks", type=str, default="data/peaks_downsampled/merged_peaks.bed")
     parser.add_argument("--bigwig-dir", type=str, default="data/bigwig")
     parser.add_argument("--genome", type=str, default="data/genome/mm10.fa")
     parser.add_argument("--chrom-sizes", type=str, default="data/genome/mm10.chrom.sizes")

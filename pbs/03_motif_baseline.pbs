@@ -10,11 +10,14 @@
 cd /srv/scratch/fabilab/emily/cellTypeAtac
 source scripts/setup_env.sh
 
+ANNOTATIONS=${ANNOTATIONS:-"data/peak_annotations.csv"}
+
 echo "=== Motif Baseline ==="
 echo "Start: $(date)"
+echo "Annotations: ${ANNOTATIONS}"
 
 python scripts/03_motif_baseline.py \
-    --annotations data/peak_annotations.csv \
+    --annotations "${ANNOTATIONS}" \
     --genome data/genome/mm10.fa \
     --output-dir results/motif_baseline
 

@@ -13,7 +13,7 @@ model:
 data:
   genome: "data/genome/mm10.fa"
   chrom_sizes: "data/genome/mm10.chrom.sizes"
-  peaks_bed: "data/YoungSed_DownSample_Peak.bed"
+  peaks_bed: "data/peaks_downsampled/merged_peaks.bed"
   bigwig_dir: "data/bigwig"
   zarr_dir: "data/training"
 

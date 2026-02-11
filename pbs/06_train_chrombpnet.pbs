@@ -3,28 +3,27 @@
 #PBS -l select=1:ncpus=8:ngpus=1:gpu_model=H200:mem=64gb
 #PBS -l walltime=12:00:00
 #PBS -A mwac_wonglab
-#PBS -J 0-4
 #PBS -j oe
 #PBS -o /srv/scratch/fabilab/emily/cellTypeAtac/logs/06_cbpnet.log
 #PBS -M z2253616@ad.unsw.edu.au
 #PBS -m abe
+#PBS -v CELL_TYPE
 
-# Array job: trains 5 cell types in parallel (indices 0-4)
+# Single cell-type training job. Submit 5 times with:
+#   for CT in Cardiomyocyte Coronary_EC Fibroblast Macrophage Pericytes; do
+#       qsub -v CELL_TYPE=$CT -o logs/06_cbpnet_${CT}.log pbs/06_train_chrombpnet.pbs
+#   done
 
 cd /srv/scratch/fabilab/emily/cellTypeAtac
 source scripts/setup_env.sh
 
-# Map array index to cell type
-CELL_TYPES=(Cardiomyocyte Coronary_EC Fibroblast Macrophage Pericytes)
-CT=${CELL_TYPES[$PBS_ARRAY_INDEX]}
-
-echo "=== Train ChromBPNet: $CT (index $PBS_ARRAY_INDEX) ==="
+echo "=== Train ChromBPNet: $CELL_TYPE ==="
 echo "Start: $(date)"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none')"
 
 python scripts/06_train_chrombpnet.py \
     --config configs/chrombpnet.yaml \
-    --cell-type "$CT" \
+    --cell-type "$CELL_TYPE" \
     --output-dir results/chrombpnet \
     --gpus 1
 

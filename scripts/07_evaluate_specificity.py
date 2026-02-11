@@ -120,7 +120,7 @@ def build_aligned_annotations(data_dir: Path, annotations: pd.DataFrame) -> pd.D
     """
     # Use first cell type's zarr as reference for coordinates
     ref_zarr_path = str(data_dir / CELL_TYPES[0] / "test.zarr")
-    ref_root = zarr.open(ref_zarr_path, "r")
+    ref_root = zarr.open(ref_zarr_path, mode="r")
 
     # Read all coordinates from zarr
     all_chroms = np.array([

@@ -813,7 +813,7 @@ def test_specific_peaks_only(
     # Build coordinate index for test regions
     ref_ct = CELL_TYPES[0]
     ref_zarr = str(Path(data_dir) / ref_ct / "test.zarr")
-    ref_root = zarr.open(ref_zarr, "r")
+    ref_root = zarr.open(ref_zarr, mode="r")
 
     chroms = np.array([c.decode() if isinstance(c, bytes) else c for c in ref_root["chrom"][:]])
     starts = ref_root["start"][:] if "start" in ref_root else None

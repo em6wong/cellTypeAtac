@@ -53,12 +53,18 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ChromBPNetWithBias:
     bias_model = BiasModel()
     model = ChromBPNetWithBias(main_model, bias_model)
 
-    # Load weights
-    model_state = {k.replace("model.", ""): v for k, v in state_dict.items()
+    # Load weights — strip Lightning's "model." prefix
+    model_state = {k.replace("model.", "", 1): v for k, v in state_dict.items()
                    if k.startswith("model.")}
     if model_state:
-        model.load_state_dict(model_state, strict=False)
+        missing, unexpected = model.load_state_dict(model_state, strict=False)
+        if missing:
+            print(f"  WARNING: Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        if unexpected:
+            print(f"  WARNING: Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+        print(f"  Loaded {len(model_state) - len(unexpected)} / {len(model_state)} keys")
     else:
+        print("  WARNING: No 'model.*' keys found in checkpoint, loading raw state_dict")
         model.load_state_dict(state_dict, strict=False)
 
     model.eval()
@@ -255,14 +261,58 @@ def main():
 
         results = predict_all(model, ct_ds, args.device, args.batch_size)
 
+        # Diagnostics: signal levels
+        tc = results["target_counts"]
+        pc = results["pred_counts"]
+        print(f"\n  --- Diagnostics ---")
+        print(f"  Target counts: min={tc.min():.1f}, median={np.median(tc):.1f}, "
+              f"mean={tc.mean():.1f}, max={tc.max():.1f}")
+        print(f"  Pred counts:   min={pc.min():.1f}, median={np.median(pc):.1f}, "
+              f"mean={pc.mean():.1f}, max={pc.max():.1f}")
+        print(f"  Peaks with target count > 0:  {(tc > 0).sum():,} / {len(tc):,}")
+        print(f"  Peaks with target count > 10: {(tc > 10).sum():,} / {len(tc):,}")
+        print(f"  Peaks with target count > 50: {(tc > 50).sum():,} / {len(tc):,}")
+
+        # Profile variance check
+        tp_std = results["target_profiles"].std(axis=1)
+        pp_std = results["pred_profiles"].std(axis=1)
+        print(f"  Target profile std: mean={tp_std.mean():.4f}, "
+              f"n_zero={int((tp_std < 1e-8).sum())}")
+        print(f"  Pred profile std:   mean={pp_std.mean():.6f}, "
+              f"n_zero={int((pp_std < 1e-8).sum())}")
+
         # Per-model metrics (model vs its own cell type's targets)
         prof_r = profile_pearson_r(results["pred_profiles"], results["target_profiles"])
         cnt_r = count_pearson_r(results["pred_counts"], results["target_counts"])
         jsd = profile_jsd(results["pred_profiles"], results["target_profiles"])
 
+        print(f"\n  --- All peaks ---")
         print(f"  Profile Pearson r: {prof_r:.4f}")
         print(f"  Count Pearson r:   {cnt_r:.4f}")
         print(f"  Profile JSD:       {jsd:.4f}")
+
+        # Filtered metrics: only peaks with meaningful signal
+        high_signal = tc > 10
+        if high_signal.sum() > 50:
+            prof_r_filt = profile_pearson_r(
+                results["pred_profiles"][high_signal],
+                results["target_profiles"][high_signal],
+            )
+            cnt_r_filt = count_pearson_r(pc[high_signal], tc[high_signal])
+            print(f"\n  --- Peaks with count > 10 (n={high_signal.sum():,}) ---")
+            print(f"  Profile Pearson r: {prof_r_filt:.4f}")
+            print(f"  Count Pearson r:   {cnt_r_filt:.4f}")
+
+        high_signal_50 = tc > 50
+        if high_signal_50.sum() > 50:
+            prof_r_filt50 = profile_pearson_r(
+                results["pred_profiles"][high_signal_50],
+                results["target_profiles"][high_signal_50],
+            )
+            cnt_r_filt50 = count_pearson_r(pc[high_signal_50], tc[high_signal_50])
+            print(f"\n  --- Peaks with count > 50 (n={high_signal_50.sum():,}) ---")
+            print(f"  Profile Pearson r: {prof_r_filt50:.4f}")
+            print(f"  Count Pearson r:   {cnt_r_filt50:.4f}")
 
         all_results[ct] = {
             "profile_r": prof_r,

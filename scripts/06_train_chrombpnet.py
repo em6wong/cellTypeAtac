@@ -26,7 +26,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Learning
 from torch.utils.data import DataLoader
 
 from src.models.chrombpnet import ChromBPNet, BiasModel, ChromBPNetWithBias
-from src.training.trainer import ChromBPNetModule
+from src.training.trainer import ChromBPNetModule, compute_dynamic_count_weight
 from src.data.dataset import ATACDataset
 
 
@@ -88,9 +88,11 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
 
     # Datasets
     data_dir = Path(config["data"]["zarr_dir"]) / cell_type
+    max_jitter = train_cfg.get("max_jitter", 0)
     train_ds = ATACDataset(
         str(data_dir / "train.zarr"), split="train",
         augment_rc=train_cfg.get("reverse_complement_augment", True),
+        max_jitter=max_jitter,
     )
     val_ds = ATACDataset(str(data_dir / "val.zarr"), split="val")
 
@@ -106,6 +108,14 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
         shuffle=False, num_workers=4, pin_memory=True,
     )
 
+    # Compute count loss weight
+    count_weight = train_cfg["count_weight"]
+    if count_weight == "auto":
+        count_weight = compute_dynamic_count_weight(train_ds)
+        print(f"Dynamic count weight: {count_weight:.2f} (median(counts)/10)")
+    else:
+        count_weight = float(count_weight)
+
     # Lightning module
     module = ChromBPNetModule(
         model=model,
@@ -113,7 +123,7 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
         weight_decay=train_cfg["weight_decay"],
         warmup_steps=train_cfg["warmup_steps"],
         profile_weight=train_cfg["profile_weight"],
-        count_weight=train_cfg["count_weight"],
+        count_weight=count_weight,
     )
 
     # Callbacks

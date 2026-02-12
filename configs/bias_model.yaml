@@ -2,13 +2,13 @@
 # Learns Tn5 sequence preference from background (non-peak) regions
 
 model:
-  channels: 64
+  channels: 128
   num_dilated_layers: 4
   kernel_size: 3
   input_length: 2114
   output_length: 1000
   profile_kernel_size: 75
-  dropout: 0.1
+  dropout: 0.0
 
 data:
   genome: "data/genome/mm10.fa"
@@ -24,7 +24,7 @@ training:
   max_epochs: 20
   early_stopping_patience: 5
   profile_weight: 1.0
-  count_weight: 0.5
+  count_weight: "auto"  # dynamic: median(counts) / 10
   precision: "16-mixed"
 
 chromosome_splits:

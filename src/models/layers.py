@@ -10,7 +10,10 @@ import torch.nn.functional as F
 
 
 class ConvBlock(nn.Module):
-    """Convolutional block with batch norm and activation."""
+    """Convolutional block with optional batch norm and dropout.
+
+    Official ChromBPNet uses NO batch norm and NO dropout.
+    """
 
     def __init__(
         self,
@@ -20,6 +23,7 @@ class ConvBlock(nn.Module):
         dilation: int = 1,
         dropout: float = 0.0,
         activation: str = "relu",
+        use_batch_norm: bool = False,
     ):
         super().__init__()
         padding = (kernel_size - 1) * dilation // 2
@@ -28,7 +32,7 @@ class ConvBlock(nn.Module):
             in_channels, out_channels, kernel_size,
             padding=padding, dilation=dilation,
         )
-        self.norm = nn.BatchNorm1d(out_channels)
+        self.norm = nn.BatchNorm1d(out_channels) if use_batch_norm else nn.Identity()
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
         if activation == "gelu":

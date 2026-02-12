@@ -23,6 +23,8 @@ python scripts/04_generate_training_data.py \
     --genome data/genome/mm10.fa \
     --chrom-sizes data/genome/mm10.chrom.sizes \
     --output-dir data/training \
+    --max-jitter 500 \
+    --gc-match \
     --workers 4
 
 echo "End: $(date)"

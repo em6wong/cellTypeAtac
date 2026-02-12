@@ -90,17 +90,32 @@ def extract_profile(
         return np.zeros(end - start, dtype=np.float32)
 
 
+def _compute_gc_content(genome, chrom, start, end):
+    """Compute GC fraction for a genomic region."""
+    try:
+        seq = str(genome[chrom][start:end]).upper()
+        gc = sum(1 for b in seq if b in "GC")
+        return gc / max(len(seq), 1)
+    except (KeyError, ValueError):
+        return 0.5
+
+
 def sample_background_regions(
     peaks: pd.DataFrame,
     chrom_sizes: dict,
     n_samples: int,
     region_width: int = 2114,
     seed: int = 42,
+    genome=None,
+    gc_match: bool = False,
+    gc_tolerance: float = 0.02,
 ) -> pd.DataFrame:
-    """Sample random background regions avoiding peaks.
+    """Sample background regions avoiding peaks, optionally GC-matched.
 
-    Regions are sampled proportional to chromosome size with a blacklist
-    around existing peaks to avoid overlap.
+    When gc_match=True and genome is provided, samples regions whose GC
+    content matches the distribution of peak regions (within gc_tolerance).
+    This prevents the bias model from confounding GC content with Tn5
+    sequence preference.
 
     Args:
         peaks: DataFrame with chrom, start, end.
@@ -108,6 +123,9 @@ def sample_background_regions(
         n_samples: Number of background regions to sample.
         region_width: Width of each region.
         seed: Random seed.
+        genome: pyfaidx.Fasta genome for GC matching (optional).
+        gc_match: Whether to match GC content of peak regions.
+        gc_tolerance: Max GC fraction difference for matching.
 
     Returns:
         DataFrame with chrom, start, end for background regions.
@@ -118,9 +136,24 @@ def sample_background_regions(
     blacklist = set()
     for _, row in peaks.iterrows():
         chrom = row["chrom"]
-        # Store as (chrom, bin) where bin = position // 1000
         for pos in range(max(0, row["start"] - region_width), row["end"] + region_width, 1000):
             blacklist.add((chrom, pos // 1000))
+
+    # Compute GC distribution of peaks for matching
+    peak_gc_bins = None
+    if gc_match and genome is not None:
+        print("  Computing peak GC content for matching...")
+        peak_gcs = []
+        for _, row in peaks.iterrows():
+            gc = _compute_gc_content(genome, row["chrom"], row["start"], row["end"])
+            peak_gcs.append(gc)
+        # Bin GC values into 0.02-wide bins for matching
+        peak_gc_bins = np.round(np.array(peak_gcs) / gc_tolerance) * gc_tolerance
+        # Count how many peaks per GC bin
+        unique_bins, bin_counts = np.unique(peak_gc_bins, return_counts=True)
+        # Target: sample proportional to peak GC distribution
+        gc_target = dict(zip(unique_bins, (bin_counts / bin_counts.sum() * n_samples).astype(int)))
+        gc_collected = {b: 0 for b in unique_bins}
 
     # Valid chromosomes
     valid_chroms = sorted([c for c in chrom_sizes if c.startswith("chr") and c[3:].isdigit()])
@@ -129,22 +162,30 @@ def sample_background_regions(
 
     regions = []
     attempts = 0
-    max_attempts = n_samples * 20
+    max_attempts = n_samples * 50 if gc_match else n_samples * 20
 
     while len(regions) < n_samples and attempts < max_attempts:
-        # Sample chromosome proportional to size
         chrom_idx = rng.choice(len(valid_chroms), p=chrom_weights)
         chrom = valid_chroms[chrom_idx]
         csize = chrom_sizes[chrom]
 
-        # Sample position
         start = rng.randint(0, max(1, csize - region_width))
         center_bin = (start + region_width // 2) // 1000
 
         if (chrom, center_bin) not in blacklist:
-            regions.append({"chrom": chrom, "start": start, "end": start + region_width})
+            if gc_match and genome is not None:
+                gc = _compute_gc_content(genome, chrom, start, start + region_width)
+                gc_bin = round(gc / gc_tolerance) * gc_tolerance
+                if gc_bin in gc_target and gc_collected[gc_bin] < gc_target[gc_bin]:
+                    regions.append({"chrom": chrom, "start": start, "end": start + region_width})
+                    gc_collected[gc_bin] += 1
+            else:
+                regions.append({"chrom": chrom, "start": start, "end": start + region_width})
 
         attempts += 1
+
+    if gc_match:
+        print(f"  GC-matched: sampled {len(regions)}/{n_samples} regions")
 
     return pd.DataFrame(regions)
 
@@ -179,7 +220,9 @@ def generate_dataset(
     output_path: str,
     input_length: int = 2114,
     output_length: int = 1000,
+    max_jitter: int = 0,
     include_background: bool = True,
+    gc_match: bool = False,
     split: Optional[str] = None,
 ):
     """Generate a zarr training dataset for one cell type.
@@ -192,9 +235,16 @@ def generate_dataset(
         output_path: Path for output zarr store.
         input_length: DNA sequence input length (default 2114).
         output_length: Profile output length (default 1000).
+        max_jitter: Random jitter in bp for training augmentation (default 0).
+            When > 0, stores wider regions so ATACDataset can random-crop.
         include_background: Whether to include background regions.
+        gc_match: Match background GC content to peak distribution.
         split: If set, only include regions from this split ('train', 'val', 'test').
     """
+    # When jitter is enabled, store wider sequences and profiles
+    stored_input_length = input_length + 2 * max_jitter
+    stored_output_length = output_length + 2 * max_jitter
+
     # Load resources
     peaks = load_regions(peaks_bed)
     genome = pyfaidx.Fasta(genome_path)
@@ -212,11 +262,17 @@ def generate_dataset(
         peaks = peaks[peaks["chrom"].isin(split_chroms)].reset_index(drop=True)
 
     print(f"Peak regions: {len(peaks):,}")
+    if max_jitter > 0:
+        print(f"Jitter: {max_jitter}bp (stored: {stored_input_length}bp seq, "
+              f"{stored_output_length}bp profile)")
 
     # Sample background regions
     if include_background:
         bg = sample_background_regions(
-            peaks, chrom_sizes, n_samples=len(peaks), region_width=input_length,
+            peaks, chrom_sizes, n_samples=len(peaks),
+            region_width=stored_input_length,
+            genome=genome if gc_match else None,
+            gc_match=gc_match,
         )
         if split is not None:
             split_chroms = set(CHROM_SPLITS[split])
@@ -231,9 +287,6 @@ def generate_dataset(
     all_regions = pd.concat([peaks, bg], ignore_index=True)
     n_regions = len(all_regions)
     print(f"Total regions: {n_regions:,}")
-
-    # Flank for input sequence
-    flank = (input_length - output_length) // 2
 
     # Create zarr store (compatible with zarr v2 and v3)
     root = zarr.open(output_path, mode="w")
@@ -250,10 +303,15 @@ def generate_dataset(
     _zarr_store(root, "is_peak", is_peak_data)
 
     # Large arrays: create zero-filled, populate incrementally
-    seqs = _zarr_zeros(root, "sequences", shape=(n_regions, 4, input_length),
-                       dtype=np.float32, chunks=(100, 4, input_length))
-    profiles = _zarr_zeros(root, "profiles", shape=(n_regions, output_length),
-                           dtype=np.float32, chunks=(100, output_length))
+    # Store wider regions when jitter is enabled
+    seqs = _zarr_zeros(root, "sequences",
+                       shape=(n_regions, 4, stored_input_length),
+                       dtype=np.float32,
+                       chunks=(100, 4, stored_input_length))
+    profiles = _zarr_zeros(root, "profiles",
+                           shape=(n_regions, stored_output_length),
+                           dtype=np.float32,
+                           chunks=(100, stored_output_length))
     counts = _zarr_zeros(root, "counts", shape=(n_regions,),
                          dtype=np.float32, chunks=(1000,))
 
@@ -266,10 +324,10 @@ def generate_dataset(
 
         # Center the region
         center = (start + end) // 2
-        seq_start = center - input_length // 2
-        seq_end = seq_start + input_length
-        profile_start = center - output_length // 2
-        profile_end = profile_start + output_length
+        seq_start = center - stored_input_length // 2
+        seq_end = seq_start + stored_input_length
+        profile_start = center - stored_output_length // 2
+        profile_end = profile_start + stored_output_length
 
         # Clamp to chromosome bounds
         csize = chrom_sizes.get(chrom, seq_end + 1)
@@ -282,18 +340,18 @@ def generate_dataset(
         try:
             seq_str = str(genome[chrom][seq_start:seq_end])
             # Pad if near chromosome boundary
-            if len(seq_str) < input_length:
-                seq_str = seq_str + "N" * (input_length - len(seq_str))
+            if len(seq_str) < stored_input_length:
+                seq_str = seq_str + "N" * (stored_input_length - len(seq_str))
             seqs[idx] = one_hot_encode(seq_str)
         except (KeyError, ValueError):
             pass
 
         # Extract profile
         profile = extract_profile(bw, chrom, profile_start, profile_end)
-        if len(profile) < output_length:
-            profile = np.pad(profile, (0, output_length - len(profile)))
-        profiles[idx] = profile[:output_length]
-        counts[idx] = profile[:output_length].sum()
+        if len(profile) < stored_output_length:
+            profile = np.pad(profile, (0, stored_output_length - len(profile)))
+        profiles[idx] = profile[:stored_output_length]
+        counts[idx] = profile[:stored_output_length].sum()
 
     bw.close()
 

@@ -19,7 +19,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from torch.utils.data import DataLoader
 
 from src.models.chrombpnet import BiasModel
-from src.training.trainer import BiasModelModule
+from src.training.trainer import BiasModelModule, compute_dynamic_count_weight
 from src.data.dataset import BiasDataset
 
 
@@ -69,13 +69,21 @@ def main():
         shuffle=False, num_workers=4, pin_memory=True,
     )
 
+    # Compute count loss weight
+    count_weight = train_cfg["count_weight"]
+    if count_weight == "auto":
+        count_weight = compute_dynamic_count_weight(train_ds)
+        print(f"Dynamic count weight: {count_weight:.2f} (median(counts)/10)")
+    else:
+        count_weight = float(count_weight)
+
     # Lightning module
     module = BiasModelModule(
         model=model,
         learning_rate=train_cfg["learning_rate"],
         weight_decay=train_cfg.get("weight_decay", 0.0),
         profile_weight=train_cfg["profile_weight"],
-        count_weight=train_cfg["count_weight"],
+        count_weight=count_weight,
     )
 
     # Callbacks

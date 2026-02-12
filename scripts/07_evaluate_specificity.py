@@ -48,9 +48,9 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ChromBPNetWithBias:
     else:
         state_dict = state
 
-    # Reconstruct model
+    # Reconstruct model (defaults match configs: 8 dil layers, 128ch bias, no dropout)
     main_model = ChromBPNet()
-    bias_model = BiasModel()
+    bias_model = BiasModel()  # channels=128 is now the default
     model = ChromBPNetWithBias(main_model, bias_model)
 
     # Load weights — strip Lightning's "model." prefix
@@ -94,7 +94,8 @@ def predict_all(model, dataset, device="cpu", batch_size=64):
 
         # Convert profile logits to probabilities for comparison
         profile_probs = torch.softmax(out["profile"], dim=-1)
-        pred_count = torch.exp(out["count"])
+        # Model predicts log(1 + count), convert back to counts
+        pred_count = torch.expm1(out["count"])
 
         pred_profiles.append(profile_probs.cpu().numpy())
         pred_counts.append(pred_count.cpu().numpy())

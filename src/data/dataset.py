@@ -51,6 +51,10 @@ class ATACDataset(Dataset):
         zarr_path: Path to zarr store.
         split: 'train', 'val', or 'test' for chromosome filtering.
         augment_rc: Apply reverse complement augmentation (50% prob).
+        max_jitter: Random jitter in bp (0 = no jitter). Requires zarr
+            to have been generated with extra flanking sequence.
+        input_length: Expected input sequence length after cropping.
+        output_length: Expected output profile length after cropping.
     """
 
     def __init__(
@@ -58,9 +62,15 @@ class ATACDataset(Dataset):
         zarr_path: str,
         split: Optional[str] = None,
         augment_rc: bool = False,
+        max_jitter: int = 0,
+        input_length: int = 2114,
+        output_length: int = 1000,
     ):
         self.root = zarr.open(zarr_path, mode="r")
         self.augment_rc = augment_rc
+        self.max_jitter = max_jitter
+        self.input_length = input_length
+        self.output_length = output_length
 
         # Load metadata
         chroms = np.array([c.decode() if isinstance(c, bytes) else c
@@ -79,10 +89,27 @@ class ATACDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         real_idx = self.indices[idx]
 
-        sequence = self.root["sequences"][real_idx]  # (4, input_length)
-        profile = self.root["profiles"][real_idx]     # (output_length,)
-        count = self.root["counts"][real_idx]          # scalar
+        sequence = self.root["sequences"][real_idx]  # (4, stored_length)
+        profile = self.root["profiles"][real_idx]     # (stored_length,)
         is_peak = bool(self.root["is_peak"][real_idx])
+
+        # Jitter augmentation: random crop from wider stored region
+        if self.max_jitter > 0 and sequence.shape[1] > self.input_length:
+            max_offset = sequence.shape[1] - self.input_length
+            offset = np.random.randint(0, max_offset + 1)
+            sequence = sequence[:, offset:offset + self.input_length]
+            # Profile offset accounts for input/output length difference
+            prof_max_offset = profile.shape[0] - self.output_length
+            prof_offset = min(offset, prof_max_offset)
+            profile = profile[prof_offset:prof_offset + self.output_length]
+        elif sequence.shape[1] > self.input_length:
+            # No jitter but stored wider — center crop
+            offset = (sequence.shape[1] - self.input_length) // 2
+            sequence = sequence[:, offset:offset + self.input_length]
+            prof_offset = (profile.shape[0] - self.output_length) // 2
+            profile = profile[prof_offset:prof_offset + self.output_length]
+
+        count = float(profile.sum())
 
         # Reverse complement augmentation
         if self.augment_rc and np.random.random() < 0.5:
@@ -90,8 +117,8 @@ class ATACDataset(Dataset):
             profile = profile[::-1].copy()
 
         return {
-            "sequence": torch.from_numpy(sequence),
-            "profile": torch.from_numpy(profile),
+            "sequence": torch.from_numpy(np.ascontiguousarray(sequence)),
+            "profile": torch.from_numpy(np.ascontiguousarray(profile)),
             "count": torch.tensor(count, dtype=torch.float32),
             "is_peak": torch.tensor(is_peak, dtype=torch.bool),
         }

@@ -148,7 +148,7 @@ def predict_single_ct(
         out = model(seq)
 
         profile_probs = torch.softmax(out["profile"], dim=-1)
-        pred_count = torch.exp(out["count"])
+        pred_count = torch.expm1(out["count"])
 
         pred_profiles.append(profile_probs.cpu().numpy())
         pred_counts.append(pred_count.cpu().numpy())
@@ -192,7 +192,7 @@ def predict_multi_cell(
 
         for ct_idx, ct in enumerate(CELL_TYPES):
             ct_profile = torch.softmax(out["profile"][:, ct_idx, :], dim=-1)
-            ct_count = torch.exp(out["count"][:, ct_idx])
+            ct_count = torch.expm1(out["count"][:, ct_idx])
 
             pred_profiles[ct].append(ct_profile.cpu().numpy())
             pred_counts[ct].append(ct_count.cpu().numpy())
@@ -496,7 +496,7 @@ def test_marker_specificity_stage2(
         for ct, model in models.items():
             with torch.no_grad():
                 out = model(seq)
-            pred_count = torch.exp(out["count"]).item()
+            pred_count = torch.expm1(out["count"]).item()
             ct_counts[ct] = pred_count
 
         # Display
@@ -565,7 +565,7 @@ def test_marker_specificity_stage3(
         with torch.no_grad():
             out = model(seq)  # profile: (1, n_ct, 1000), count: (1, n_ct)
 
-        pred_counts = torch.exp(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
+        pred_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
 
         max_idx = np.argmax(pred_counts)
         max_ct = CELL_TYPES[max_idx]
@@ -871,7 +871,7 @@ def test_specific_peaks_only(
             for model_ct, model in models.items():
                 with torch.no_grad():
                     out = model(seq)
-                raw_count = torch.exp(out["count"]).item()
+                raw_count = torch.expm1(out["count"]).item()
                 # Normalize by model's mean count (removes "high everywhere" confound)
                 normalized_preds[model_ct] = raw_count / (model_mean_counts[model_ct] + 1e-8)
 
@@ -997,7 +997,7 @@ def test_motif_perturbation(
     baseline_counts = {}
     for ct, model in models.items():
         out = model(bg_tensor)
-        baseline_counts[ct] = torch.exp(out["count"]).item()
+        baseline_counts[ct] = torch.expm1(out["count"]).item()
 
     results = {}
 
@@ -1023,7 +1023,7 @@ def test_motif_perturbation(
             perturbed_counts = {}
             for ct, model in models.items():
                 out = model(perturbed)
-                perturbed_counts[ct] = torch.exp(out["count"]).item()
+                perturbed_counts[ct] = torch.expm1(out["count"]).item()
 
             # Compute fold-change for each model
             fold_changes = {}
@@ -1125,7 +1125,7 @@ def test_motif_perturbation_stage3(
     bg_tensor = _one_hot_encode(bg_seq_str).unsqueeze(0).to(device)
 
     out = model(bg_tensor)
-    baseline_counts = torch.exp(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
+    baseline_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
 
     results = {}
 
@@ -1145,7 +1145,7 @@ def test_motif_perturbation_stage3(
             perturbed = _one_hot_encode(perturbed_str).unsqueeze(0).to(device)
 
             out = model(perturbed)
-            perturbed_counts = torch.exp(out["count"]).squeeze(0).cpu().numpy()
+            perturbed_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()
 
             fold_changes = perturbed_counts / (baseline_counts + 1e-8)
 

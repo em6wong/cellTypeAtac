@@ -1,15 +1,16 @@
 """Per-cell-type ChromBPNet model.
 
-Architecture:
+Architecture (following official Kundaje lab ChromBPNet):
     Input: 2114bp one-hot DNA sequence (4, 2114)
-    → Stem: Conv1d(4→512, k=21) + BN + ReLU
-    → Dilated Conv Stack: 9 layers, k=3, dilation=2^i, residual
+    → Stem: Conv1d(4→512, k=21) + ReLU (no batch norm)
+    → Dilated Conv Stack: 8 layers, k=3, dilation=2^i, residual
     → Profile Head: Conv1d(512→1, k=75), center crop to 1000bp
     → Count Head: AdaptiveAvgPool1d(1) → Linear(512→1)
 
-Bias model: Same architecture but smaller (64 channels, 4 layers).
-Frozen during main model training. Residual connection:
-    main_prediction = total_prediction - bias_prediction
+Bias model: Same architecture but smaller (128 channels, 4 layers).
+Frozen during main model training. Combination:
+    profile: additive in logit space (bias_logits + main_logits)
+    count: logsumexp (additive in count space)
 """
 
 import torch
@@ -27,10 +28,11 @@ class ChromBPNet(nn.Module):
         output_length: Profile output length (default 1000).
         stem_channels: Number of channels after stem conv (default 512).
         stem_kernel_size: Stem convolution kernel size (default 21).
-        num_dilated_layers: Number of dilated conv layers (default 9).
+        num_dilated_layers: Number of dilated conv layers (default 8).
         dilated_kernel_size: Kernel size for dilated convs (default 3).
         profile_kernel_size: Kernel size for profile head (default 75).
-        dropout: Dropout rate (default 0.1).
+        dropout: Dropout rate (default 0.0, official uses no dropout).
+        use_batch_norm: Use batch norm (default False, official uses none).
     """
 
     def __init__(
@@ -39,10 +41,11 @@ class ChromBPNet(nn.Module):
         output_length: int = 1000,
         stem_channels: int = 512,
         stem_kernel_size: int = 21,
-        num_dilated_layers: int = 9,
+        num_dilated_layers: int = 8,
         dilated_kernel_size: int = 3,
         profile_kernel_size: int = 75,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
+        use_batch_norm: bool = False,
     ):
         super().__init__()
         self.input_length = input_length
@@ -50,7 +53,8 @@ class ChromBPNet(nn.Module):
 
         # Stem convolution
         self.stem = ConvBlock(
-            4, stem_channels, stem_kernel_size, dropout=dropout,
+            4, stem_channels, stem_kernel_size,
+            dropout=dropout, use_batch_norm=use_batch_norm,
         )
 
         # Dilated conv stack
@@ -91,25 +95,25 @@ class BiasModel(nn.Module):
     """Smaller ChromBPNet for learning Tn5 sequence bias.
 
     Trained on non-peak background regions. Uses fewer channels
-    and layers than the main model.
+    and layers than the main model. Official uses 128 channels.
 
     Args:
         input_length: DNA sequence length (default 2114).
         output_length: Profile output length (default 1000).
-        channels: Number of channels (default 64).
+        channels: Number of channels (default 128, matching official).
         num_dilated_layers: Number of dilated conv layers (default 4).
         profile_kernel_size: Kernel size for profile head (default 75).
-        dropout: Dropout rate (default 0.1).
+        dropout: Dropout rate (default 0.0).
     """
 
     def __init__(
         self,
         input_length: int = 2114,
         output_length: int = 1000,
-        channels: int = 64,
+        channels: int = 128,
         num_dilated_layers: int = 4,
         profile_kernel_size: int = 75,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.input_length = input_length
@@ -164,8 +168,9 @@ class ChromBPNetWithBias(nn.Module):
     def forward(self, sequence: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Forward pass with bias correction.
 
-        Returns the total prediction (bias + main), plus the individual
-        components for monitoring.
+        Profile: additive in logit space (bias_logits + main_logits).
+        Count: logsumexp = log(exp(bias) + exp(main)), i.e. additive in
+               count space, NOT multiplicative (which plain addition would be).
         """
         # Bias prediction (no grad)
         with torch.no_grad():
@@ -174,9 +179,15 @@ class ChromBPNetWithBias(nn.Module):
         # Main model prediction
         main_out = self.main_model(sequence)
 
-        # Total = bias + main (in logit space for profile)
+        # Profile: additive in logit space (same as official)
         total_profile = bias_out["profile"] + main_out["profile"]
-        total_count = bias_out["count"] + main_out["count"]
+
+        # Count: logsumexp (additive in count space, matching official)
+        # log(exp(bias_logcount) + exp(main_logcount))
+        total_count = torch.logsumexp(
+            torch.stack([bias_out["count"], main_out["count"]], dim=-1),
+            dim=-1,
+        )
 
         return {
             "profile": total_profile,

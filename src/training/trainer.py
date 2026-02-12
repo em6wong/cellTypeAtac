@@ -19,6 +19,29 @@ from ..training.loss import ChromBPNetLoss, MultiCellChromBPNetLoss
 from ..data.dataset import ATACDataset, BiasDataset
 
 
+def compute_dynamic_count_weight(dataset, n_samples: int = 5000) -> float:
+    """Compute count loss weight as median(counts) / 10.
+
+    This matches the official ChromBPNet implementation which dynamically
+    sets the count loss weight based on the data distribution.
+
+    Args:
+        dataset: Dataset with 'count' field in samples.
+        n_samples: Number of samples to estimate median from.
+
+    Returns:
+        Count weight value.
+    """
+    indices = np.random.choice(len(dataset), min(n_samples, len(dataset)), replace=False)
+    counts = []
+    for i in indices:
+        sample = dataset[int(i)]
+        counts.append(float(sample["count"]))
+    median_count = float(np.median(counts))
+    weight = max(median_count / 10.0, 0.01)  # floor to prevent near-zero weight
+    return weight
+
+
 class BiasModelModule(pl.LightningModule):
     """Lightning module for bias model training.
 

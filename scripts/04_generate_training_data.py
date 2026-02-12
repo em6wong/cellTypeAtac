@@ -41,6 +41,10 @@ def main():
     parser.add_argument("--output-dir", type=str, default="data/training")
     parser.add_argument("--input-length", type=int, default=2114)
     parser.add_argument("--output-length", type=int, default=1000)
+    parser.add_argument("--max-jitter", type=int, default=0,
+                        help="Random jitter in bp for training augmentation (default: 0)")
+    parser.add_argument("--gc-match", action="store_true",
+                        help="Match background GC content to peak distribution")
     parser.add_argument("--cell-types", type=str, default=None,
                         help="Comma-separated cell types (default: all)")
     parser.add_argument("--workers", type=int, default=1,
@@ -64,6 +68,9 @@ def main():
             zarr_path = out_dir / ct / f"{split}.zarr"
             zarr_path.parent.mkdir(parents=True, exist_ok=True)
 
+            # Only use jitter for training split
+            jitter = args.max_jitter if split == "train" else 0
+
             tasks.append((
                 f"{ct}/{split}",
                 dict(
@@ -74,7 +81,9 @@ def main():
                     output_path=str(zarr_path),
                     input_length=args.input_length,
                     output_length=args.output_length,
+                    max_jitter=jitter,
                     include_background=(split == "train"),
+                    gc_match=args.gc_match if split == "train" else False,
                     split=split,
                 ),
             ))
@@ -86,6 +95,8 @@ def main():
             zarr_path = out_dir / "merged" / f"{split}.zarr"
             zarr_path.parent.mkdir(parents=True, exist_ok=True)
 
+            jitter = args.max_jitter if split == "train" else 0
+
             tasks.append((
                 f"merged/{split}",
                 dict(
@@ -96,7 +107,9 @@ def main():
                     output_path=str(zarr_path),
                     input_length=args.input_length,
                     output_length=args.output_length,
+                    max_jitter=jitter,
                     include_background=True,
+                    gc_match=args.gc_match if split == "train" else False,
                     split=split,
                 ),
             ))

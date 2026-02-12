@@ -3,12 +3,12 @@
 model:
   stem_channels: 512
   stem_kernel_size: 21
-  num_dilated_layers: 9
+  num_dilated_layers: 8
   dilated_kernel_size: 3
   input_length: 2114
   output_length: 1000
   profile_kernel_size: 75
-  dropout: 0.1
+  dropout: 0.0
 
 data:
   genome: "data/genome/mm10.fa"
@@ -25,9 +25,10 @@ training:
   early_stopping_patience: 10
   warmup_steps: 1000
   profile_weight: 1.0
-  count_weight: 0.5
+  count_weight: "auto"  # dynamic: median(counts) / 10
   precision: "16-mixed"
   reverse_complement_augment: true
+  max_jitter: 500
 
 bias_model:
   checkpoint: "results/bias_model/best.ckpt"

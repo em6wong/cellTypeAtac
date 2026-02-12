@@ -1,11 +1,8 @@
 """Loss functions for ATAC-seq profile and count prediction.
 
-Adapted from ../multiome/src/training/loss.py. Simplified for per-cell-type
-ChromBPNet training.
-
-Uses count likelihoods (not MSE) for statistically faithful modeling:
+Following the official ChromBPNet (Kundaje lab):
   - Multinomial NLL for profile shape
-  - Poisson NLL for total counts
+  - MSE on log(1 + count) for total counts
 """
 
 import torch
@@ -45,36 +42,22 @@ def multinomial_nll_loss(
     return nll.mean()
 
 
-def poisson_nll(
-    log_rate: torch.Tensor,
-    target: torch.Tensor,
-) -> torch.Tensor:
-    """Poisson NLL loss for count prediction.
-
-    Args:
-        log_rate: Predicted log(rate) (batch,) or (batch, n).
-        target: Target counts (same shape).
-
-    Returns:
-        Per-element NLL.
-    """
-    log_rate = torch.clamp(log_rate, min=-20, max=20)
-    mu = torch.exp(log_rate)
-    nll = mu - target * log_rate + torch.lgamma(target + 1)
-    return nll
-
-
 class ChromBPNetLoss(nn.Module):
     """Combined loss for ChromBPNet: profile shape + count magnitude.
 
-    Loss = profile_weight * multinomial_NLL + count_weight * poisson_NLL
+    Loss = profile_weight * multinomial_NLL + count_weight * MSE(log_count)
+
+    Following the official ChromBPNet:
+    - Profile: multinomial NLL (same)
+    - Count: MSE on log(1 + count) instead of Poisson NLL
+    - Count weight: should be set to median(counts) / 10 (dynamic)
 
     Args:
         profile_weight: Weight for multinomial profile loss.
-        count_weight: Weight for Poisson count loss.
+        count_weight: Weight for MSE count loss.
     """
 
-    def __init__(self, profile_weight: float = 1.0, count_weight: float = 0.5):
+    def __init__(self, profile_weight: float = 1.0, count_weight: float = 1.0):
         super().__init__()
         self.profile_weight = profile_weight
         self.count_weight = count_weight
@@ -90,9 +73,9 @@ class ChromBPNetLoss(nn.Module):
 
         Args:
             pred_profile: Profile logits (batch, length).
-            pred_count: Predicted log(count) (batch,) or (batch, 1).
-            target_profile: Target profile (batch, length).
-            target_count: Target count (batch,) or (batch, 1).
+            pred_count: Predicted log-count (batch,) or (batch, 1).
+            target_profile: Target profile (batch, length) — raw counts.
+            target_count: Target total count (batch,) or (batch, 1) — raw counts.
 
         Returns:
             Dict with 'loss', 'profile_loss', 'count_loss'.
@@ -104,7 +87,9 @@ class ChromBPNetLoss(nn.Module):
             pred_profile, target_profile, target_count,
         )
 
-        count_loss = poisson_nll(pred_count, target_count).mean()
+        # Count loss: MSE on log(1 + count), matching official ChromBPNet
+        target_logcount = torch.log1p(target_count)
+        count_loss = F.mse_loss(pred_count, target_logcount)
 
         total = self.profile_weight * profile_loss + self.count_weight * count_loss
 
@@ -173,7 +158,8 @@ class MultiCellChromBPNetLoss(nn.Module):
             )
             profile_losses.append(p_loss)
 
-            c_loss = poisson_nll(pred_count[:, ct], target_count[:, ct]).mean()
+            target_logcount = torch.log1p(target_count[:, ct])
+            c_loss = F.mse_loss(pred_count[:, ct], target_logcount)
             count_losses.append(c_loss)
 
         profile_loss = torch.stack(profile_losses).mean()

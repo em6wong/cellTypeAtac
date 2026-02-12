@@ -6,10 +6,10 @@ measures informed by the multiome project's lessons.
 
 Architecture:
     Input: 2114bp one-hot DNA (4, 2114) + cell_type_id
-    → Stem: Conv1d(4→512, k=21) + BN + ReLU
-    → FiLM-conditioned Dilated Conv Stack: 9 layers with cell-type FiLM
-    → Profile Head: Conv1d(512→n_cell_types, k=75)
-    → Count Head: Linear(512→n_cell_types)
+    → Stem: Conv1d(4→512, k=21, valid) + ReLU
+    → FiLM-conditioned Dilated Conv Stack: 8 layers (d=2..256) with cell-type FiLM
+    → Profile Head: Conv1d(512→n_cell_types, k=75, valid)
+    → Count Head: AdaptiveAvgPool1d(1) → Linear(512→n_cell_types)
 """
 
 import torch
@@ -37,10 +37,10 @@ class MultiCellChromBPNet(nn.Module):
         output_length: Profile output length (default 1000).
         stem_channels: Number of channels (default 512).
         stem_kernel_size: Stem kernel size (default 21).
-        num_dilated_layers: Number of dilated layers (default 9).
+        num_dilated_layers: Number of dilated layers (default 8).
         dilated_kernel_size: Dilated conv kernel size (default 3).
         profile_kernel_size: Profile head kernel size (default 75).
-        dropout: Dropout rate (default 0.1).
+        dropout: Dropout rate (default 0.0).
     """
 
     def __init__(
@@ -51,10 +51,10 @@ class MultiCellChromBPNet(nn.Module):
         output_length: int = 1000,
         stem_channels: int = 512,
         stem_kernel_size: int = 21,
-        num_dilated_layers: int = 9,
+        num_dilated_layers: int = 8,
         dilated_kernel_size: int = 3,
         profile_kernel_size: int = 75,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.num_cell_types = num_cell_types

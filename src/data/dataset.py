@@ -206,10 +206,14 @@ class MultiCellATACDataset(Dataset):
         zarr_paths: List[str],
         split: Optional[str] = None,
         augment_rc: bool = False,
+        input_length: int = 2114,
+        output_length: int = 1000,
     ):
         self.roots = [zarr.open(p, mode="r") for p in zarr_paths]
         self.augment_rc = augment_rc
         self.n_cell_types = len(zarr_paths)
+        self.input_length = input_length
+        self.output_length = output_length
 
         # Use first zarr for chromosome filtering (all share same regions)
         chroms = np.array([c.decode() if isinstance(c, bytes) else c
@@ -228,14 +232,24 @@ class MultiCellATACDataset(Dataset):
         real_idx = self.indices[idx]
 
         # Sequence from first cell type (shared across all)
-        sequence = self.roots[0]["sequences"][real_idx]  # (4, input_length)
+        sequence = self.roots[0]["sequences"][real_idx]  # (4, stored_length)
+
+        # Center-crop if stored wider than expected (jitter padding)
+        if sequence.shape[1] > self.input_length:
+            offset = (sequence.shape[1] - self.input_length) // 2
+            sequence = sequence[:, offset:offset + self.input_length]
 
         # Stack profiles and counts from all cell types
         profiles = []
         counts = []
         for root in self.roots:
-            profiles.append(root["profiles"][real_idx])
-            counts.append(root["counts"][real_idx])
+            prof = root["profiles"][real_idx]
+            # Center-crop profile if stored wider
+            if prof.shape[0] > self.output_length:
+                offset = (prof.shape[0] - self.output_length) // 2
+                prof = prof[offset:offset + self.output_length]
+            profiles.append(prof)
+            counts.append(float(prof.sum()))
 
         profile = np.stack(profiles, axis=0)  # (n_cell_types, output_length)
         count = np.array(counts, dtype=np.float32)  # (n_cell_types,)
@@ -246,7 +260,7 @@ class MultiCellATACDataset(Dataset):
             profile = profile[:, ::-1].copy()
 
         return {
-            "sequence": torch.from_numpy(sequence),
-            "profile": torch.from_numpy(profile),
+            "sequence": torch.from_numpy(np.ascontiguousarray(sequence)),
+            "profile": torch.from_numpy(np.ascontiguousarray(profile)),
             "count": torch.from_numpy(count),
         }

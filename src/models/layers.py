@@ -12,7 +12,8 @@ import torch.nn.functional as F
 class ConvBlock(nn.Module):
     """Convolutional block with optional batch norm and dropout.
 
-    Official ChromBPNet uses NO batch norm and NO dropout.
+    Official ChromBPNet uses valid padding (no padding), NO batch norm,
+    and NO dropout. Feature maps shrink at each layer.
     """
 
     def __init__(
@@ -26,11 +27,11 @@ class ConvBlock(nn.Module):
         use_batch_norm: bool = False,
     ):
         super().__init__()
-        padding = (kernel_size - 1) * dilation // 2
-
+        # Valid padding (no padding) matching official ChromBPNet.
+        # Output shrinks by (kernel_size - 1) * dilation.
         self.conv = nn.Conv1d(
             in_channels, out_channels, kernel_size,
-            padding=padding, dilation=dilation,
+            padding=0, dilation=dilation,
         )
         self.norm = nn.BatchNorm1d(out_channels) if use_batch_norm else nn.Identity()
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -51,19 +52,23 @@ class ConvBlock(nn.Module):
 
 
 class DilatedConvStack(nn.Module):
-    """Stack of dilated convolutions with residual connections."""
+    """Stack of dilated convolutions with residual connections.
+
+    Uses valid padding with cropped residuals, matching official ChromBPNet.
+    Dilations start at 2^1=2 (not 2^0=1).
+    """
 
     def __init__(
         self,
         channels: int,
         kernel_size: int = 3,
-        num_layers: int = 9,
-        dropout: float = 0.1,
+        num_layers: int = 8,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.layers = nn.ModuleList()
 
-        for i in range(num_layers):
+        for i in range(1, num_layers + 1):
             dilation = 2 ** i
             self.layers.append(
                 ConvBlock(channels, channels, kernel_size,
@@ -72,14 +77,19 @@ class DilatedConvStack(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            x = x + layer(x)
+            conv_out = layer(x)
+            # Crop residual to match valid-conv output length
+            crop = (x.size(2) - conv_out.size(2)) // 2
+            x = x[:, :, crop:crop + conv_out.size(2)] + conv_out
         return x
 
 
 class ProfileHead(nn.Module):
     """Head for base-resolution profile prediction.
 
-    Uses a large kernel (75) following ChromBPNet design.
+    Uses a large kernel (75) with valid padding, matching official ChromBPNet.
+    With correct input dimensions (2114bp, 8 dilated layers starting at d=2),
+    the valid convolutions naturally produce exactly 1000bp output.
     """
 
     def __init__(
@@ -90,14 +100,14 @@ class ProfileHead(nn.Module):
         kernel_size: int = 75,
     ):
         super().__init__()
-        padding = kernel_size // 2
-        self.conv = nn.Conv1d(in_channels, num_outputs, kernel_size=kernel_size, padding=padding)
+        self.conv = nn.Conv1d(in_channels, num_outputs, kernel_size=kernel_size, padding=0)
         self.output_length = output_length
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.conv(x)  # (batch, num_outputs, length)
 
-        # Center crop to output_length
+        # Center crop if needed (safety — should be exactly output_length
+        # with correct architecture dimensions)
         if x.size(2) > self.output_length:
             start = (x.size(2) - self.output_length) // 2
             x = x[:, :, start:start + self.output_length]
@@ -153,7 +163,8 @@ class FiLMLayer(nn.Module):
 class FiLMDilatedConvStack(nn.Module):
     """Dilated conv stack with FiLM conditioning at each layer.
 
-    Used in Stage 3 multi-cell-type model.
+    Used in Stage 3 multi-cell-type model. Uses valid padding with
+    cropped residuals, matching official ChromBPNet dilations (2^1..2^n).
     """
 
     def __init__(
@@ -161,14 +172,14 @@ class FiLMDilatedConvStack(nn.Module):
         channels: int,
         embedding_dim: int,
         kernel_size: int = 3,
-        num_layers: int = 9,
-        dropout: float = 0.1,
+        num_layers: int = 8,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.conv_layers = nn.ModuleList()
         self.film_layers = nn.ModuleList()
 
-        for i in range(num_layers):
+        for i in range(1, num_layers + 1):
             dilation = 2 ** i
             self.conv_layers.append(
                 ConvBlock(channels, channels, kernel_size,
@@ -178,8 +189,9 @@ class FiLMDilatedConvStack(nn.Module):
 
     def forward(self, x: torch.Tensor, embedding: torch.Tensor) -> torch.Tensor:
         for conv, film in zip(self.conv_layers, self.film_layers):
-            residual = x
-            x = conv(x)
-            x = film(x, embedding)
-            x = x + residual
+            conv_out = conv(x)
+            conv_out = film(conv_out, embedding)
+            # Crop residual to match valid-conv output length
+            crop = (x.size(2) - conv_out.size(2)) // 2
+            x = x[:, :, crop:crop + conv_out.size(2)] + conv_out
         return x

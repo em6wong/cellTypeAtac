@@ -2,9 +2,9 @@
 
 Architecture (following official Kundaje lab ChromBPNet):
     Input: 2114bp one-hot DNA sequence (4, 2114)
-    → Stem: Conv1d(4→512, k=21) + ReLU (no batch norm)
-    → Dilated Conv Stack: 8 layers, k=3, dilation=2^i, residual
-    → Profile Head: Conv1d(512→1, k=75), center crop to 1000bp
+    → Stem: Conv1d(4→512, k=21, valid) + ReLU → 2094bp
+    → Dilated Conv Stack: 8 layers, k=3, d=2..256, valid, cropped residual → 1074bp
+    → Profile Head: Conv1d(512→1, k=75, valid) → 1000bp
     → Count Head: AdaptiveAvgPool1d(1) → Linear(512→1)
 
 Bias model: Same architecture but smaller (128 channels, 4 layers).

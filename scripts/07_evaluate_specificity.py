@@ -107,8 +107,9 @@ def build_aligned_annotations(data_dir: Path, annotations: pd.DataFrame) -> pd.D
     """Build annotations aligned with test prediction arrays.
 
     Reads coordinates from the reference test zarr and matches them to
-    the full annotations by (chrom, start, end). Returns a DataFrame
-    where row i corresponds to prediction position i.
+    the full annotations using overlap (center of test region falls within
+    an annotated peak). This handles coordinate mismatches between the
+    downsampled peak set (used for training) and the original annotations.
 
     Args:
         data_dir: Path to training data directory.
@@ -140,27 +141,58 @@ def build_aligned_annotations(data_dir: Path, annotations: pd.DataFrame) -> pd.D
         "start": all_starts[test_indices],
         "end": all_ends[test_indices],
     })
+    test_regions["center"] = (test_regions["start"] + test_regions["end"]) // 2
 
-    # Left-join with annotations on coordinates
+    # Overlap-based matching: test region center falls within annotation peak
     ann_cols = ["chrom", "start", "end", "category", "specific_celltype", "tau"]
     available_cols = [c for c in ann_cols if c in annotations.columns]
-    aligned = test_regions.merge(
-        annotations[available_cols],
-        on=["chrom", "start", "end"],
-        how="left",
-    )
+    ann = annotations[available_cols].copy()
+
+    # Match per chromosome for efficiency
+    matched_categories = np.full(len(test_regions), np.nan, dtype=object)
+    matched_celltypes = np.full(len(test_regions), np.nan, dtype=object)
+    matched_taus = np.full(len(test_regions), np.nan, dtype=float)
+
+    for chrom in test_regions["chrom"].unique():
+        test_mask = test_regions["chrom"] == chrom
+        ann_chrom = ann[ann["chrom"] == chrom]
+
+        if ann_chrom.empty:
+            continue
+
+        ann_starts = ann_chrom["start"].values
+        ann_ends = ann_chrom["end"].values
+
+        for idx in test_regions.index[test_mask]:
+            center = test_regions.loc[idx, "center"]
+            # Find annotation peaks that contain this center
+            overlaps = (ann_starts <= center) & (ann_ends >= center)
+            if overlaps.any():
+                # Take the first (closest) match
+                match_idx = ann_chrom.index[overlaps][0]
+                if "category" in ann.columns:
+                    matched_categories[idx] = ann.loc[match_idx, "category"]
+                if "specific_celltype" in ann.columns:
+                    matched_celltypes[idx] = ann.loc[match_idx, "specific_celltype"]
+                if "tau" in ann.columns:
+                    matched_taus[idx] = ann.loc[match_idx, "tau"]
+
+    test_regions["category"] = matched_categories
+    test_regions["specific_celltype"] = matched_celltypes
+    if "tau" in available_cols:
+        test_regions["tau"] = matched_taus
 
     # Fill NaN for regions not in annotations (background regions)
-    aligned["category"] = aligned["category"].fillna("background")
-    aligned["specific_celltype"] = aligned["specific_celltype"].fillna("none")
+    test_regions["category"] = test_regions["category"].fillna("background")
+    test_regions["specific_celltype"] = test_regions["specific_celltype"].fillna("none")
 
-    n_matched = (aligned["category"] != "background").sum()
-    n_specific = (aligned["category"] == "specific").sum()
-    print(f"Test regions: {len(aligned):,}")
+    n_matched = (test_regions["category"] != "background").sum()
+    n_specific = (test_regions["category"] == "specific").sum()
+    print(f"Test regions: {len(test_regions):,}")
     print(f"  Matched to annotations: {n_matched:,}")
     print(f"  Specific peaks: {n_specific:,}")
 
-    return aligned
+    return test_regions
 
 
 def main():
@@ -195,10 +227,14 @@ def main():
     all_predictions = {}
 
     for ct in CELL_TYPES:
-        ckpt_path = Path(args.model_dir) / ct / "best.ckpt"
-        if not ckpt_path.exists():
-            print(f"WARNING: Checkpoint not found for {ct}: {ckpt_path}")
+        # Find best checkpoint (Lightning may append -v1, -v2, etc.)
+        ct_dir = Path(args.model_dir) / ct
+        ckpt_candidates = sorted(ct_dir.glob("best*.ckpt"), key=lambda p: p.stat().st_mtime)
+        if not ckpt_candidates:
+            print(f"WARNING: No checkpoint found for {ct} in {ct_dir}")
             continue
+        ckpt_path = ckpt_candidates[-1]  # most recent
+        print(f"Using checkpoint: {ckpt_path.name}")
 
         print(f"\n{'='*60}")
         print(f"Evaluating: {ct}")

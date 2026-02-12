@@ -134,8 +134,16 @@ class BiasDataset(Dataset):
         split: 'train', 'val', or 'test'.
     """
 
-    def __init__(self, zarr_path: str, split: Optional[str] = None):
+    def __init__(
+        self,
+        zarr_path: str,
+        split: Optional[str] = None,
+        input_length: int = 2114,
+        output_length: int = 1000,
+    ):
         self.root = zarr.open(zarr_path, mode="r")
+        self.input_length = input_length
+        self.output_length = output_length
 
         chroms = np.array([c.decode() if isinstance(c, bytes) else c
                           for c in self.root["chrom"][:]])
@@ -158,11 +166,20 @@ class BiasDataset(Dataset):
 
         sequence = self.root["sequences"][real_idx]
         profile = self.root["profiles"][real_idx]
-        count = self.root["counts"][real_idx]
+
+        # Center-crop if stored wider than expected (jitter padding)
+        if sequence.shape[1] > self.input_length:
+            offset = (sequence.shape[1] - self.input_length) // 2
+            sequence = sequence[:, offset:offset + self.input_length]
+        if profile.shape[0] > self.output_length:
+            offset = (profile.shape[0] - self.output_length) // 2
+            profile = profile[offset:offset + self.output_length]
+
+        count = float(profile.sum())
 
         return {
-            "sequence": torch.from_numpy(sequence),
-            "profile": torch.from_numpy(profile),
+            "sequence": torch.from_numpy(np.ascontiguousarray(sequence)),
+            "profile": torch.from_numpy(np.ascontiguousarray(profile)),
             "count": torch.tensor(count, dtype=torch.float32),
         }
 

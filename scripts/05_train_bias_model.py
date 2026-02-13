@@ -38,6 +38,13 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Remove old checkpoints to prevent Lightning from appending version
+    # suffixes (best-v1.ckpt etc.) which causes downstream scripts to
+    # load stale checkpoints.
+    for old_ckpt in out_dir.glob("best*.ckpt"):
+        print(f"Removing old checkpoint: {old_ckpt}")
+        old_ckpt.unlink()
+
     # Create model
     model_cfg = config["model"]
     model = BiasModel(

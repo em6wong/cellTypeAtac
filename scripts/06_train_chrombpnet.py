@@ -45,6 +45,11 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
     ct_dir = output_dir / cell_type
     ct_dir.mkdir(parents=True, exist_ok=True)
 
+    # Remove old checkpoints to prevent Lightning version suffix issue
+    for old_ckpt in ct_dir.glob("best*.ckpt"):
+        print(f"Removing old checkpoint: {old_ckpt}")
+        old_ckpt.unlink()
+
     # Create main model
     main_model = ChromBPNet(
         input_length=model_cfg["input_length"],

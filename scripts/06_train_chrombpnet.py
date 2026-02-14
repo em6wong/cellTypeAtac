@@ -20,6 +20,7 @@ import yaml
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -27,10 +28,41 @@ from torch.utils.data import DataLoader
 
 from src.models.chrombpnet import ChromBPNet, BiasModel, ChromBPNetWithBias
 from src.training.trainer import ChromBPNetModule, compute_dynamic_count_weight
-from src.data.dataset import ATACDataset
+from src.data.dataset import ATACDataset, BiasDataset
 
 
 CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Pericytes"]
+
+
+def adjust_bias_model_logcounts(bias_model, dataset, device="cpu", n_samples=2000):
+    """Scale bias model count head to match dataset's count distribution.
+
+    Following official ChromBPNet: adds a constant to the count head's
+    bias term that minimizes MSE between predicted and observed log-counts
+    on non-peak (background) regions.
+    """
+    bias_model.eval()
+    rng = np.random.default_rng(42)
+    indices = rng.choice(len(dataset), min(n_samples, len(dataset)), replace=False)
+
+    pred_logcounts = []
+    obs_logcounts = []
+
+    with torch.no_grad():
+        for idx in indices:
+            sample = dataset[int(idx)]
+            seq = sample["sequence"].unsqueeze(0).to(device)
+            out = bias_model(seq)
+            pred_logcounts.append(out["count"].item())
+            obs_logcounts.append(np.log1p(sample["count"].item()))
+
+    delta = np.mean(obs_logcounts) - np.mean(pred_logcounts)
+
+    with torch.no_grad():
+        bias_model.count_head.fc.bias.data += delta
+
+    print(f"  Bias count scaling: delta={delta:.4f}")
+    return bias_model
 
 
 def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
@@ -85,6 +117,13 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
         print(f"WARNING: Bias model checkpoint not found: {bias_ckpt}")
         print("Training without bias correction.")
 
+    # Scale bias model counts to match this cell type's read depth
+    # (matching official ChromBPNet's adjust_bias_model_logcounts step)
+    data_dir = Path(config["data"]["zarr_dir"]) / cell_type
+    bg_dataset = BiasDataset(str(data_dir / "train.zarr"), split="train")
+    print(f"Background samples for scaling: {len(bg_dataset):,}")
+    adjust_bias_model_logcounts(bias_model, bg_dataset)
+
     # Combine models
     model = ChromBPNetWithBias(main_model, bias_model)
 
@@ -92,7 +131,6 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
     print(f"Trainable parameters: {n_params:,}")
 
     # Datasets
-    data_dir = Path(config["data"]["zarr_dir"]) / cell_type
     max_jitter = train_cfg.get("max_jitter", 0)
     train_ds = ATACDataset(
         str(data_dir / "train.zarr"), split="train",

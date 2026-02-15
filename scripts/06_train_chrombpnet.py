@@ -163,8 +163,6 @@ def train_cell_type(cell_type: str, config: dict, output_dir: Path, gpus: int):
     module = ChromBPNetModule(
         model=model,
         learning_rate=train_cfg["learning_rate"],
-        weight_decay=train_cfg["weight_decay"],
-        warmup_steps=train_cfg["warmup_steps"],
         profile_weight=train_cfg["profile_weight"],
         count_weight=count_weight,
     )

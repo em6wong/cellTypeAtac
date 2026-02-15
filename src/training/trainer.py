@@ -104,9 +104,7 @@ class ChromBPNetModule(pl.LightningModule):
 
     Args:
         model: ChromBPNetWithBias instance.
-        learning_rate: Learning rate (default 1e-4).
-        weight_decay: Weight decay (default 1e-5).
-        warmup_steps: Linear warmup steps (default 1000).
+        learning_rate: Learning rate (default 0.001, matching official).
         profile_weight: Profile loss weight (default 1.0).
         count_weight: Count loss weight (default 0.5).
     """
@@ -114,17 +112,13 @@ class ChromBPNetModule(pl.LightningModule):
     def __init__(
         self,
         model: ChromBPNetWithBias,
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-5,
-        warmup_steps: int = 1000,
+        learning_rate: float = 0.001,
         profile_weight: float = 1.0,
         count_weight: float = 0.5,
     ):
         super().__init__()
         self.model = model
         self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.warmup_steps = warmup_steps
         self.loss_fn = ChromBPNetLoss(profile_weight, count_weight)
         self.save_hyperparameters(ignore=["model"])
 
@@ -148,28 +142,11 @@ class ChromBPNetModule(pl.LightningModule):
         return self._shared_step(batch, "val")
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
+        # Official ChromBPNet uses Adam with constant LR (no scheduler)
+        return torch.optim.Adam(
             filter(lambda p: p.requires_grad, self.parameters()),
             lr=self.learning_rate,
-            weight_decay=self.weight_decay,
         )
-
-        def lr_lambda(step):
-            if step < self.warmup_steps:
-                return step / max(1, self.warmup_steps)
-            # Cosine decay after warmup
-            progress = (step - self.warmup_steps) / max(1, self.trainer.estimated_stepping_batches - self.warmup_steps)
-            return 0.5 * (1 + np.cos(np.pi * min(progress, 1.0)))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
-        }
 
 
 class MultiCellModule(pl.LightningModule):

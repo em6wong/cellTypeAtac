@@ -137,7 +137,7 @@ def main():
         counts = []
         for i in indices:
             sample = train_ds[int(i)]
-            counts.append(float(np.mean(sample["count"])))
+            counts.append(float(sample["count"].float().mean()))
         count_weight = max(float(np.median(counts)) / 10.0, 0.01)
         print(f"Dynamic count weight: {count_weight:.2f} (median(mean_counts)/10)")
     else:

@@ -131,8 +131,6 @@ def main():
         model=model,
         num_cell_types=len(CELL_TYPES),
         learning_rate=train_cfg["learning_rate"],
-        weight_decay=train_cfg["weight_decay"],
-        warmup_steps=train_cfg["warmup_steps"],
         profile_weight=train_cfg["profile_weight"],
         count_weight=train_cfg["count_weight"],
         diff_weight=0.1,

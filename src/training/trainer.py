@@ -160,9 +160,7 @@ class MultiCellModule(pl.LightningModule):
     Args:
         model: MultiCellChromBPNet instance.
         num_cell_types: Number of cell types.
-        learning_rate: Learning rate (default 1e-4).
-        weight_decay: Weight decay (default 1e-5).
-        warmup_steps: Linear warmup steps (default 1000).
+        learning_rate: Learning rate (default 0.001, matching official).
         profile_weight: Profile loss weight (default 1.0).
         count_weight: Count loss weight (default 0.5).
         diff_weight: Differential penalty weight (default 0.1).
@@ -173,9 +171,7 @@ class MultiCellModule(pl.LightningModule):
         self,
         model: MultiCellChromBPNet,
         num_cell_types: int = 5,
-        learning_rate: float = 1e-4,
-        weight_decay: float = 1e-5,
-        warmup_steps: int = 1000,
+        learning_rate: float = 0.001,
         profile_weight: float = 1.0,
         count_weight: float = 0.5,
         diff_weight: float = 0.1,
@@ -185,8 +181,6 @@ class MultiCellModule(pl.LightningModule):
         self.model = model
         self.num_cell_types = num_cell_types
         self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.warmup_steps = warmup_steps
         self.single_ct_training = single_ct_training
 
         self.single_loss_fn = ChromBPNetLoss(profile_weight, count_weight)
@@ -241,24 +235,8 @@ class MultiCellModule(pl.LightningModule):
         return losses["loss"]
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
+        # Official ChromBPNet uses Adam with constant LR (no scheduler)
+        return torch.optim.Adam(
             self.parameters(),
             lr=self.learning_rate,
-            weight_decay=self.weight_decay,
         )
-
-        def lr_lambda(step):
-            if step < self.warmup_steps:
-                return step / max(1, self.warmup_steps)
-            progress = (step - self.warmup_steps) / max(1, self.trainer.estimated_stepping_batches - self.warmup_steps)
-            return 0.5 * (1 + np.cos(np.pi * min(progress, 1.0)))
-
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
-        }

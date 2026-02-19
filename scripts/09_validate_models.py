@@ -61,8 +61,11 @@ CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Peric
 KNOWN_MARKERS = {
     "Myh6": {"chrom": "chr14", "tss": 54966927, "expected_high": "Cardiomyocyte"},
     "Myh7": {"chrom": "chr14", "tss": 54994626, "expected_high": "Cardiomyocyte"},
+    "Tnnt2": {"chrom": "chr1", "tss": 135836609, "expected_high": "Cardiomyocyte"},
     "Pecam1": {"chrom": "chr11", "tss": 106750628, "expected_high": "Coronary_EC"},
+    "Cdh5": {"chrom": "chr8", "tss": 104169012, "expected_high": "Coronary_EC"},
     "Col1a1": {"chrom": "chr11", "tss": 94936224, "expected_high": "Fibroblast"},
+    "Col3a1": {"chrom": "chr1", "tss": 45311422, "expected_high": "Fibroblast"},
     "Cd68": {"chrom": "chr11", "tss": 69663605, "expected_high": "Macrophage"},
     "Pdgfrb": {"chrom": "chr18", "tss": 61058246, "expected_high": "Pericytes"},
 }
@@ -1412,6 +1415,255 @@ def generate_collapse_heatmap(
     print(f"  Saved: {filename}")
 
 
+def generate_marker_profile_plots(
+    models: Dict[str, ChromBPNetWithBias],
+    genome_path: str,
+    bigwig_dir: str,
+    output_dir: str,
+    device: str,
+):
+    """Generate profile plots at known marker gene loci for all cell types.
+
+    For each marker gene, plots predicted (blue) and actual (orange) ATAC signal
+    in a stacked subplot layout (one row per cell type).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pyfaidx
+    import pyBigWig
+
+    genome = pyfaidx.Fasta(genome_path)
+    bigwig_dir = Path(bigwig_dir)
+
+    # Load bigwig files for each cell type
+    bigwigs = {}
+    for ct in CELL_TYPES:
+        bw_path = bigwig_dir / f"{ct}.bw"
+        if bw_path.exists():
+            bigwigs[ct] = pyBigWig.open(str(bw_path))
+        else:
+            print(f"  Warning: bigWig not found for {ct}: {bw_path}")
+
+    if not bigwigs:
+        print("  Skipping marker profile plots: no bigWig files found")
+        return
+
+    profile_len = 1000
+    half_profile = profile_len // 2
+
+    for gene_name, info in KNOWN_MARKERS.items():
+        chrom = info["chrom"]
+        tss = info["tss"]
+        expected = info["expected_high"]
+
+        # Extract 2114bp sequence centered on TSS for model input
+        input_len = 2114
+        half_input = input_len // 2
+        seq_start = tss - half_input
+        seq_end = tss + half_input
+        chrom_len = len(genome[chrom])
+        if seq_start < 0 or seq_end > chrom_len:
+            print(f"  Skipping {gene_name}: too close to chromosome edge")
+            continue
+
+        seq_str = str(genome[chrom][seq_start:seq_end]).upper()
+        seq_tensor = _one_hot_encode(seq_str).unsqueeze(0).to(device)
+
+        # bigWig region: 1000bp centered on TSS
+        bw_start = tss - half_profile
+        bw_end = tss + half_profile
+
+        fig, axes = plt.subplots(
+            len(CELL_TYPES), 1,
+            figsize=(12, 2.5 * len(CELL_TYPES)),
+            sharex=True,
+        )
+        x_pos = np.arange(-half_profile, half_profile)
+
+        for ct_idx, ct in enumerate(CELL_TYPES):
+            ax = axes[ct_idx]
+
+            # Predicted: run model -> count-scaled profile
+            if ct in models:
+                with torch.no_grad():
+                    out = models[ct](seq_tensor)
+                profile_logits = out["profile"].squeeze(0).cpu().numpy()
+                count_log = out["count"].squeeze(0).cpu().numpy()
+                # softmax(logits) * expm1(count) = count-scaled profile
+                profile_exp = np.exp(profile_logits - profile_logits.max())
+                profile_probs = profile_exp / profile_exp.sum()
+                pred_signal = profile_probs * np.expm1(count_log)
+            else:
+                pred_signal = np.zeros(profile_len)
+
+            # Actual: read from bigwig
+            if ct in bigwigs:
+                try:
+                    actual_signal = np.array(
+                        bigwigs[ct].values(chrom, bw_start, bw_end)
+                    )
+                    actual_signal = np.nan_to_num(actual_signal, nan=0.0)
+                except Exception:
+                    actual_signal = np.zeros(profile_len)
+            else:
+                actual_signal = np.zeros(profile_len)
+
+            # Plot
+            ax.fill_between(x_pos, actual_signal, alpha=0.4, color="orange", label="Actual (bigWig)")
+            ax.plot(x_pos, actual_signal, color="orange", alpha=0.7, linewidth=0.5)
+            ax.fill_between(x_pos, pred_signal, alpha=0.4, color="blue", label="Predicted")
+            ax.plot(x_pos, pred_signal, color="blue", alpha=0.7, linewidth=0.5)
+
+            # TSS line
+            ax.axvline(0, color="red", linestyle="--", alpha=0.5, linewidth=1)
+
+            # Ylabel: bold green for expected cell type
+            if ct == expected:
+                ax.set_ylabel(ct, fontweight="bold", color="green", fontsize=10)
+            else:
+                ax.set_ylabel(ct, fontsize=10)
+
+            if ct_idx == 0:
+                ax.legend(loc="upper right", fontsize=8)
+
+        axes[-1].set_xlabel("Position relative to TSS (bp)")
+        fig.suptitle(
+            f"{gene_name} ({chrom}:{tss:,}) — expected: {expected}\n"
+            f"Stage 2 per-cell-type models | blue=predicted, orange=actual",
+            fontweight="bold", fontsize=11,
+        )
+        plt.tight_layout()
+
+        filename = f"{output_dir}/marker_profile_{gene_name}.png"
+        plt.savefig(filename, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved: {filename}")
+
+    # Close bigwig handles
+    for bw in bigwigs.values():
+        bw.close()
+
+
+def generate_marker_profile_plots_stage3(
+    model: "MultiCellChromBPNet",
+    genome_path: str,
+    bigwig_dir: str,
+    output_dir: str,
+    device: str,
+):
+    """Generate marker profile plots using multi-cell model (Stage 3).
+
+    Similar to generate_marker_profile_plots but uses forward_single_celltype()
+    for each cell type from the single multi-cell model.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pyfaidx
+    import pyBigWig
+
+    genome = pyfaidx.Fasta(genome_path)
+    bigwig_dir = Path(bigwig_dir)
+
+    bigwigs = {}
+    for ct in CELL_TYPES:
+        bw_path = bigwig_dir / f"{ct}.bw"
+        if bw_path.exists():
+            bigwigs[ct] = pyBigWig.open(str(bw_path))
+        else:
+            print(f"  Warning: bigWig not found for {ct}: {bw_path}")
+
+    if not bigwigs:
+        print("  Skipping marker profile plots: no bigWig files found")
+        return
+
+    profile_len = 1000
+    half_profile = profile_len // 2
+
+    for gene_name, info in KNOWN_MARKERS.items():
+        chrom = info["chrom"]
+        tss = info["tss"]
+        expected = info["expected_high"]
+
+        input_len = 2114
+        half_input = input_len // 2
+        seq_start = tss - half_input
+        seq_end = tss + half_input
+        chrom_len = len(genome[chrom])
+        if seq_start < 0 or seq_end > chrom_len:
+            print(f"  Skipping {gene_name}: too close to chromosome edge")
+            continue
+
+        seq_str = str(genome[chrom][seq_start:seq_end]).upper()
+        seq_tensor = _one_hot_encode(seq_str).unsqueeze(0).to(device)
+
+        bw_start = tss - half_profile
+        bw_end = tss + half_profile
+
+        fig, axes = plt.subplots(
+            len(CELL_TYPES), 1,
+            figsize=(12, 2.5 * len(CELL_TYPES)),
+            sharex=True,
+        )
+        x_pos = np.arange(-half_profile, half_profile)
+
+        for ct_idx, ct in enumerate(CELL_TYPES):
+            ax = axes[ct_idx]
+
+            # Predicted: single forward pass per cell type
+            with torch.no_grad():
+                out = model.forward_single_celltype(seq_tensor, ct_idx)
+            profile_logits = out["profile"].squeeze(0).cpu().numpy()
+            count_log = out["count"].squeeze(0).cpu().numpy()
+            profile_exp = np.exp(profile_logits - profile_logits.max())
+            profile_probs = profile_exp / profile_exp.sum()
+            pred_signal = profile_probs * np.expm1(count_log)
+
+            # Actual from bigwig
+            if ct in bigwigs:
+                try:
+                    actual_signal = np.array(
+                        bigwigs[ct].values(chrom, bw_start, bw_end)
+                    )
+                    actual_signal = np.nan_to_num(actual_signal, nan=0.0)
+                except Exception:
+                    actual_signal = np.zeros(profile_len)
+            else:
+                actual_signal = np.zeros(profile_len)
+
+            ax.fill_between(x_pos, actual_signal, alpha=0.4, color="orange", label="Actual (bigWig)")
+            ax.plot(x_pos, actual_signal, color="orange", alpha=0.7, linewidth=0.5)
+            ax.fill_between(x_pos, pred_signal, alpha=0.4, color="blue", label="Predicted")
+            ax.plot(x_pos, pred_signal, color="blue", alpha=0.7, linewidth=0.5)
+
+            ax.axvline(0, color="red", linestyle="--", alpha=0.5, linewidth=1)
+
+            if ct == expected:
+                ax.set_ylabel(ct, fontweight="bold", color="green", fontsize=10)
+            else:
+                ax.set_ylabel(ct, fontsize=10)
+
+            if ct_idx == 0:
+                ax.legend(loc="upper right", fontsize=8)
+
+        axes[-1].set_xlabel("Position relative to TSS (bp)")
+        fig.suptitle(
+            f"{gene_name} ({chrom}:{tss:,}) — expected: {expected}\n"
+            f"Stage 3 multi-cell model | blue=predicted, orange=actual",
+            fontweight="bold", fontsize=11,
+        )
+        plt.tight_layout()
+
+        filename = f"{output_dir}/marker_profile_{gene_name}_stage3.png"
+        plt.savefig(filename, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Saved: {filename}")
+
+    for bw in bigwigs.values():
+        bw.close()
+
+
 # ==============================================================================
 # Helpers
 # ==============================================================================
@@ -1455,6 +1707,8 @@ def main():
                         help="Max test samples for correlation analysis")
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for inference")
+    parser.add_argument("--bigwig-dir", type=str, default="data/bigwig",
+                        help="Directory with per-cell-type bigWig files ({CellType}.bw)")
     args = parser.parse_args()
 
     if args.device == "cuda" and not torch.cuda.is_available():
@@ -1556,6 +1810,19 @@ def main():
             if scatter_data:
                 generate_count_scatter(scatter_data, str(out_dir), "Stage 2")
                 generate_profile_plots(scatter_data, str(out_dir), "Stage 2")
+
+            # Marker gene profile plots (Stage 2)
+            if Path(args.genome).exists() and Path(args.bigwig_dir).exists():
+                s2_models = {}
+                for ct in CELL_TYPES:
+                    ckpt = Path(args.model_dir) / ct / "best.ckpt"
+                    if ckpt.exists():
+                        s2_models[ct] = load_single_ct_model(str(ckpt), args.device)
+                if s2_models:
+                    generate_marker_profile_plots(
+                        s2_models, args.genome, args.bigwig_dir,
+                        str(out_dir), args.device,
+                    )
         except ImportError:
             print("  Skipping plots (matplotlib not available)")
 
@@ -1630,6 +1897,13 @@ def main():
                     )
                     generate_count_scatter(mc_results, str(out_dir), "Stage 3")
                     generate_profile_plots(mc_results, str(out_dir), "Stage 3")
+
+                # Marker gene profile plots (Stage 3)
+                if Path(args.genome).exists() and Path(args.bigwig_dir).exists():
+                    generate_marker_profile_plots_stage3(
+                        model, args.genome, args.bigwig_dir,
+                        str(out_dir), args.device,
+                    )
 
                 # Collapse heatmap
                 if "corr_matrix" in collapse_results:

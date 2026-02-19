@@ -40,6 +40,7 @@ GENOME=${GENOME:-"data/genome/mm10.fa"}
 ANNOTATIONS=${ANNOTATIONS:-"data/peak_annotations.csv"}
 OUTPUT_DIR=${OUTPUT_DIR:-"results/validation"}
 MAX_SAMPLES=${MAX_SAMPLES:-500}
+BIGWIG_DIR=${BIGWIG_DIR:-"data/bigwig"}
 
 echo "=========================================="
 echo "Job ID: ${PBS_JOBID}"
@@ -53,6 +54,7 @@ echo "  Multi-cell ckpt: ${MULTI_CKPT}"
 echo "  Data dir: ${DATA_DIR}"
 echo "  Output dir: ${OUTPUT_DIR}"
 echo "  Max samples: ${MAX_SAMPLES}"
+echo "  BigWig dir: ${BIGWIG_DIR}"
 echo "=========================================="
 
 python scripts/09_validate_models.py \
@@ -64,6 +66,7 @@ python scripts/09_validate_models.py \
     --annotations "${ANNOTATIONS}" \
     --output-dir "${OUTPUT_DIR}" \
     --max-samples "${MAX_SAMPLES}" \
+    --bigwig-dir "${BIGWIG_DIR}" \
     --device cuda
 
 echo ""

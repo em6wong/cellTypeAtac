@@ -27,6 +27,8 @@ from src.models.multi_cell_chrombpnet import MultiCellChromBPNet
 from src.training.trainer import MultiCellModule
 from src.data.dataset import MultiCellATACDataset
 
+import numpy as np
+
 
 CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Pericytes"]
 
@@ -126,13 +128,28 @@ def main():
         shuffle=False, num_workers=4, pin_memory=True,
     ) if val_ds else None
 
+    # Compute count loss weight
+    count_weight = train_cfg["count_weight"]
+    if count_weight == "auto":
+        # Sample counts from training data (mean across cell types)
+        n_samples = min(5000, len(train_ds))
+        indices = np.random.choice(len(train_ds), n_samples, replace=False)
+        counts = []
+        for i in indices:
+            sample = train_ds[int(i)]
+            counts.append(float(np.mean(sample["count"])))
+        count_weight = max(float(np.median(counts)) / 10.0, 0.01)
+        print(f"Dynamic count weight: {count_weight:.2f} (median(mean_counts)/10)")
+    else:
+        count_weight = float(count_weight)
+
     # Lightning module
     module = MultiCellModule(
         model=model,
         num_cell_types=len(CELL_TYPES),
         learning_rate=train_cfg["learning_rate"],
         profile_weight=train_cfg["profile_weight"],
-        count_weight=train_cfg["count_weight"],
+        count_weight=count_weight,
         diff_weight=0.1,
         single_ct_training=args.single_ct_training,
     )

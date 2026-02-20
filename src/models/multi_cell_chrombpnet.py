@@ -181,17 +181,36 @@ class MultiCellChromBPNet(nn.Module):
         if "state_dict" in state_dict:
             state_dict = state_dict["state_dict"]
 
+        # Strip Lightning module prefix: checkpoint keys are like
+        # "model.main_model.stem.*" from ChromBPNetModule -> ChromBPNetWithBias -> ChromBPNet
+        cleaned = {}
+        for k, v in state_dict.items():
+            # Try stripping "model.main_model." (full ChromBPNetWithBias path)
+            if k.startswith("model.main_model."):
+                cleaned[k.replace("model.main_model.", "")] = v
+            # Fallback: strip just "model." (direct ChromBPNet)
+            elif k.startswith("model."):
+                cleaned[k.replace("model.", "")] = v
+            else:
+                cleaned[k] = v
+        state_dict = cleaned
+
         # Create multi-cell model
         model = cls(num_cell_types=num_cell_types, embedding_dim=embedding_dim, **kwargs)
 
         # Transfer stem weights
         stem_keys = {k: v for k, v in state_dict.items() if k.startswith("stem.")}
-        model.stem.load_state_dict(
-            {k.replace("stem.", ""): v for k, v in stem_keys.items()},
-            strict=False,
-        )
+        if stem_keys:
+            model.stem.load_state_dict(
+                {k.replace("stem.", "", 1): v for k, v in stem_keys.items()},
+                strict=False,
+            )
+            print(f"  Transferred {len(stem_keys)} stem parameters")
+        else:
+            print("  WARNING: No stem weights found in checkpoint")
 
         # Transfer dilated conv weights (conv layers only, not FiLM)
+        n_transferred = 0
         for i, conv_layer in enumerate(model.dilated_convs.conv_layers):
             src_prefix = f"dilated_convs.layers.{i}."
             matching = {
@@ -201,5 +220,7 @@ class MultiCellChromBPNet(nn.Module):
             }
             if matching:
                 conv_layer.load_state_dict(matching, strict=False)
+                n_transferred += len(matching)
+        print(f"  Transferred {n_transferred} dilated conv parameters")
 
         return model

@@ -152,6 +152,12 @@ class FiLMLayer(nn.Module):
         self.gamma = nn.Linear(embedding_dim, channels)
         self.beta = nn.Linear(embedding_dim, channels)
 
+        # Initialize to identity: gamma=1, beta=0 so FiLM starts as passthrough
+        nn.init.zeros_(self.gamma.weight)
+        nn.init.ones_(self.gamma.bias)
+        nn.init.zeros_(self.beta.weight)
+        nn.init.zeros_(self.beta.bias)
+
     def forward(self, x: torch.Tensor, embedding: torch.Tensor) -> torch.Tensor:
         # x: (batch, channels, length)
         # embedding: (batch, embedding_dim)

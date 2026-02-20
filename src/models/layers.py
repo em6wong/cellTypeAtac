@@ -33,6 +33,11 @@ class ConvBlock(nn.Module):
             in_channels, out_channels, kernel_size,
             padding=0, dilation=dilation,
         )
+        # Match Keras glorot_uniform (Xavier) init used by official ChromBPNet
+        nn.init.xavier_uniform_(self.conv.weight)
+        if self.conv.bias is not None:
+            nn.init.zeros_(self.conv.bias)
+
         self.norm = nn.BatchNorm1d(out_channels) if use_batch_norm else nn.Identity()
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -101,6 +106,9 @@ class ProfileHead(nn.Module):
     ):
         super().__init__()
         self.conv = nn.Conv1d(in_channels, num_outputs, kernel_size=kernel_size, padding=0)
+        nn.init.xavier_uniform_(self.conv.weight)
+        if self.conv.bias is not None:
+            nn.init.zeros_(self.conv.bias)
         self.output_length = output_length
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -122,6 +130,8 @@ class CountHead(nn.Module):
         super().__init__()
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(in_channels, num_outputs)
+        nn.init.xavier_uniform_(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pool(x).squeeze(-1)  # (batch, channels)

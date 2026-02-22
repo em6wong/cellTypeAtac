@@ -103,9 +103,6 @@ class ProfileHead(nn.Module):
     ):
         super().__init__()
         self.conv = nn.Conv1d(in_channels, num_outputs, kernel_size=kernel_size, padding=0)
-        nn.init.xavier_uniform_(self.conv.weight)
-        if self.conv.bias is not None:
-            nn.init.zeros_(self.conv.bias)
         self.output_length = output_length
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

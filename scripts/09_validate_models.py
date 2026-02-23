@@ -90,10 +90,15 @@ def load_single_ct_model(
     bias_model = BiasModel()
     model = ChromBPNetWithBias(main_model, bias_model)
 
-    model_state = {k.replace("model.", ""): v for k, v in state_dict.items()
+    model_state = {k.replace("model.", "", 1): v for k, v in state_dict.items()
                    if k.startswith("model.")}
     if model_state:
-        model.load_state_dict(model_state, strict=False)
+        missing, unexpected = model.load_state_dict(model_state, strict=False)
+        if missing:
+            print(f"  WARNING: Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        if unexpected:
+            print(f"  WARNING: Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+        print(f"  Loaded {len(model_state) - len(unexpected)} / {len(model_state)} keys")
     else:
         model.load_state_dict(state_dict, strict=False)
 
@@ -114,10 +119,15 @@ def load_multi_cell_model(
 
     model = MultiCellChromBPNet(num_cell_types=len(CELL_TYPES))
 
-    model_state = {k.replace("model.", ""): v for k, v in state_dict.items()
+    model_state = {k.replace("model.", "", 1): v for k, v in state_dict.items()
                    if k.startswith("model.")}
     if model_state:
-        model.load_state_dict(model_state, strict=False)
+        missing, unexpected = model.load_state_dict(model_state, strict=False)
+        if missing:
+            print(f"  WARNING: Missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+        if unexpected:
+            print(f"  WARNING: Unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
+        print(f"  Loaded {len(model_state) - len(unexpected)} / {len(model_state)} keys")
     else:
         model.load_state_dict(state_dict, strict=False)
 

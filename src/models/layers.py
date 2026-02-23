@@ -103,6 +103,13 @@ class ProfileHead(nn.Module):
     ):
         super().__init__()
         self.conv = nn.Conv1d(in_channels, num_outputs, kernel_size=kernel_size, padding=0)
+        # Xavier/Glorot init to match official ChromBPNet (Keras glorot_uniform default).
+        # This layer outputs logits with no activation, so Xavier is correct
+        # (Kaiming is for ReLU layers). Xavier gives ~2.5x larger initial weights,
+        # producing more peaked softmax profiles from the start.
+        nn.init.xavier_uniform_(self.conv.weight)
+        if self.conv.bias is not None:
+            nn.init.zeros_(self.conv.bias)
         self.output_length = output_length
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

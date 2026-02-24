@@ -223,4 +223,14 @@ class MultiCellChromBPNet(nn.Module):
                 n_transferred += len(matching)
         print(f"  Transferred {n_transferred} dilated conv parameters")
 
+        # Freeze transferred encoder so only FiLM, heads, and embeddings train
+        for p in model.stem.parameters():
+            p.requires_grad = False
+        for conv_layer in model.dilated_convs.conv_layers:
+            for p in conv_layer.parameters():
+                p.requires_grad = False
+        n_frozen = sum(1 for p in model.parameters() if not p.requires_grad)
+        n_trainable = sum(1 for p in model.parameters() if p.requires_grad)
+        print(f"  Frozen {n_frozen} encoder params, {n_trainable} trainable (FiLM + heads + embeddings)")
+
         return model

@@ -30,6 +30,12 @@ def multinomial_nll_loss(
     Returns:
         Scalar loss.
     """
+    # Ensure float32 for numerical stability under AMP (float16 can overflow
+    # when total_counts is large, since NLL scales with count magnitude)
+    logits = logits.float()
+    targets = targets.float()
+    total_counts = total_counts.float()
+
     # Normalize targets to probabilities
     target_probs = targets / (targets.sum(dim=-1, keepdim=True) + eps)
 
@@ -80,8 +86,8 @@ class ChromBPNetLoss(nn.Module):
         Returns:
             Dict with 'loss', 'profile_loss', 'count_loss'.
         """
-        pred_count = pred_count.squeeze(-1)
-        target_count = target_count.squeeze(-1)
+        pred_count = pred_count.squeeze(-1).float()
+        target_count = target_count.squeeze(-1).float()
 
         profile_loss = multinomial_nll_loss(
             pred_profile, target_profile, target_count,
@@ -145,6 +151,10 @@ class MultiCellChromBPNetLoss(nn.Module):
             Dict with loss components.
         """
         n_cell_types = pred_profile.size(1)
+
+        # Ensure float32 for numerical stability under AMP
+        pred_count = pred_count.float()
+        target_count = target_count.float()
 
         # Per-cell-type profile and count losses
         profile_losses = []

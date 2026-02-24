@@ -182,12 +182,14 @@ def main():
         except ImportError:
             pass
 
-    # Trainer
+    # Trainer — gradient clipping stabilises the initial epochs when
+    # pre-trained encoder features meet freshly-initialised heads under AMP.
     trainer = pl.Trainer(
         max_epochs=train_cfg["max_epochs"],
         accelerator="gpu" if args.gpus > 0 else "cpu",
         devices=args.gpus if args.gpus > 0 else 1,
         precision=train_cfg.get("precision", "16-mixed"),
+        gradient_clip_val=1.0,
         callbacks=[checkpoint_cb, early_stop_cb, lr_cb],
         default_root_dir=str(out_dir),
         logger=logger,

@@ -182,13 +182,15 @@ def main():
         except ImportError:
             pass
 
-    # Trainer — gradient clipping stabilises the initial epochs when
-    # pre-trained encoder features meet freshly-initialised heads under AMP.
+    # Trainer — use bf16-mixed (not fp16) because FiLM gamma multiplies
+    # features at each of 8 dilated conv layers; the compound growth can
+    # exceed fp16 max (65504) after ~1500 steps, but bf16 shares float32's
+    # exponent range (max 3.4e38).  Gradient clipping for extra stability.
     trainer = pl.Trainer(
         max_epochs=train_cfg["max_epochs"],
         accelerator="gpu" if args.gpus > 0 else "cpu",
         devices=args.gpus if args.gpus > 0 else 1,
-        precision=train_cfg.get("precision", "16-mixed"),
+        precision="bf16-mixed",
         gradient_clip_val=1.0,
         callbacks=[checkpoint_cb, early_stop_cb, lr_cb],
         default_root_dir=str(out_dir),

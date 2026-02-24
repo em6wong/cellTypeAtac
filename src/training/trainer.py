@@ -209,6 +209,32 @@ class MultiCellModule(pl.LightningModule):
                 batch["profile"], batch["count"],
             )
 
+        # NaN diagnostic — print once per source then stop checking
+        if not getattr(self, "_nan_diagnosed", False) and torch.isnan(losses["loss"]):
+            self._nan_diagnosed = True
+            parts = []
+            for key in ("sequence", "profile", "count"):
+                if torch.isnan(batch[key]).any():
+                    parts.append(f"batch[{key}]")
+            for key in ("profile", "count"):
+                if torch.isnan(out[key]).any():
+                    parts.append(f"out[{key}]")
+                if torch.isinf(out[key]).any():
+                    parts.append(f"out[{key}](inf)")
+            for key, v in losses.items():
+                if torch.isnan(v):
+                    parts.append(f"loss/{key}")
+            ct_name = f"ct={ct_idx}" if self.single_ct_training else "all"
+            print(f"\n*** NaN at step {batch_idx} ({ct_name}): {', '.join(parts) or 'unknown'}")
+            print(f"    out['profile'] range: [{out['profile'].min():.4f}, {out['profile'].max():.4f}]")
+            print(f"    out['count']   range: [{out['count'].min():.4f}, {out['count'].max():.4f}]")
+            tgt_count = batch["count"][:, ct_idx] if self.single_ct_training else batch["count"]
+            print(f"    target count   range: [{tgt_count.min():.4f}, {tgt_count.max():.4f}]")
+            # Check model weights for NaN
+            nan_params = [n for n, p in self.model.named_parameters() if torch.isnan(p).any()]
+            if nan_params:
+                print(f"    NaN in parameters: {nan_params[:5]}")
+
         for k, v in losses.items():
             self.log(f"train/{k}", v, prog_bar=(k == "loss"))
         return losses["loss"]

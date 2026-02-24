@@ -1487,7 +1487,7 @@ def generate_marker_profile_plots(
         fig, axes = plt.subplots(
             len(CELL_TYPES), 1,
             figsize=(12, 2.5 * len(CELL_TYPES)),
-            sharex=True,
+            sharex=True, sharey=True,
         )
         x_pos = np.arange(-half_profile, half_profile)
 
@@ -1614,7 +1614,7 @@ def generate_marker_profile_plots_stage3(
         fig, axes = plt.subplots(
             len(CELL_TYPES), 1,
             figsize=(12, 2.5 * len(CELL_TYPES)),
-            sharex=True,
+            sharex=True, sharey=True,
         )
         x_pos = np.arange(-half_profile, half_profile)
 

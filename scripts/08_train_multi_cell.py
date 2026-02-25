@@ -37,7 +37,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train multi-cell-type ChromBPNet")
     parser.add_argument("--config", type=str, default="configs/chrombpnet.yaml")
     parser.add_argument("--init-from", type=str, default=None,
-                        help="Initialize from per-cell-type checkpoint")
+                        help="Initialize encoder from per-cell-type checkpoint")
+    parser.add_argument("--model-dir", type=str, default="results/chrombpnet",
+                        help="Directory with per-cell-type models for head init")
     parser.add_argument("--data-dir", type=str, default="data/training")
     parser.add_argument("--output-dir", type=str, default="results/multi_cell")
     parser.add_argument("--gpus", type=int, default=1)
@@ -84,6 +86,30 @@ def main():
             profile_kernel_size=model_cfg["profile_kernel_size"],
             dropout=model_cfg["dropout"],
         )
+
+    # Transfer profile and count heads from all per-cell-type models
+    model_dir = Path(args.model_dir)
+    n_heads_loaded = 0
+    for ct_idx, ct in enumerate(CELL_TYPES):
+        ckpt_path = model_dir / ct / "best.ckpt"
+        if not ckpt_path.exists():
+            print(f"  WARNING: No checkpoint for {ct}, head channel {ct_idx} keeps random init")
+            continue
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        if "state_dict" in sd:
+            sd = sd["state_dict"]
+        for k, v in sd.items():
+            if "profile_head.conv.weight" in k:
+                model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
+            elif "profile_head.conv.bias" in k:
+                model.profile_head.conv.bias.data[ct_idx] = v.item()
+            elif "count_head.fc.weight" in k:
+                model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
+            elif "count_head.fc.bias" in k:
+                model.count_head.fc.bias.data[ct_idx] = v.item()
+        n_heads_loaded += 1
+        print(f"  Transferred heads from {ct}")
+    print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels from single-cell models")
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
@@ -143,11 +169,16 @@ def main():
     else:
         count_weight = float(count_weight)
 
-    # Lightning module
+    # Lightning module — use lower LR than single-cell (0.0001 vs 0.001)
+    # since heads are already well-initialized from per-cell-type models
+    # and we only need FiLM to learn small cell-type modulations.
+    multi_cell_lr = train_cfg["learning_rate"] / 10.0
+    print(f"Multi-cell learning rate: {multi_cell_lr}")
+
     module = MultiCellModule(
         model=model,
         num_cell_types=len(CELL_TYPES),
-        learning_rate=train_cfg["learning_rate"],
+        learning_rate=multi_cell_lr,
         profile_weight=train_cfg["profile_weight"],
         count_weight=count_weight,
         diff_weight=0.1,
@@ -162,7 +193,7 @@ def main():
     )
     early_stop_cb = EarlyStopping(
         monitor="val/loss" if val_loader else "train/loss",
-        patience=train_cfg["early_stopping_patience"],
+        patience=10,
         mode="min",
     )
     lr_cb = LearningRateMonitor(logging_interval="step")

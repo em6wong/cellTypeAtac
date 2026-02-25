@@ -98,14 +98,15 @@ def main():
         sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         if "state_dict" in sd:
             sd = sd["state_dict"]
+        # Match main_model keys only (not bias_model which has fewer channels)
         for k, v in sd.items():
-            if "profile_head.conv.weight" in k:
+            if "main_model.profile_head.conv.weight" in k:
                 model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
-            elif "profile_head.conv.bias" in k:
+            elif "main_model.profile_head.conv.bias" in k:
                 model.profile_head.conv.bias.data[ct_idx] = v.item()
-            elif "count_head.fc.weight" in k:
+            elif "main_model.count_head.fc.weight" in k:
                 model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
-            elif "count_head.fc.bias" in k:
+            elif "main_model.count_head.fc.bias" in k:
                 model.count_head.fc.bias.data[ct_idx] = v.item()
         n_heads_loaded += 1
         print(f"  Transferred heads from {ct}")

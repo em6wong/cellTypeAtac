@@ -677,7 +677,8 @@ def test_collapse_detection(
 
     print(f"\n  Mean predicted count per cell type:")
     for i, ct in enumerate(CELL_TYPES):
-        bar = "#" * int(mean_counts[i] * 20 / (mean_counts.max() + 1e-8))
+        ratio = mean_counts[i] * 20 / (mean_counts.max() + 1e-8)
+        bar = "#" * (int(ratio) if np.isfinite(ratio) else 0)
         print(f"    {ct:>15s}: {mean_counts[i]:8.2f} {bar}")
     print(f"  Signal CV: {signal_cv:.3f}")
 

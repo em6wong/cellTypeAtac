@@ -112,6 +112,18 @@ def main():
         print(f"  Transferred heads from {ct}")
     print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels from single-cell models")
 
+    # Freeze heads too — with encoder AND heads frozen, only FiLM + embeddings
+    # train.  This prevents FiLM/head co-adaptation that causes feature explosion
+    # (FiLM gammas compound across 8 layers → inf counts).  FiLM is forced to
+    # produce features at the scale the pre-trained heads expect.
+    for p in model.profile_head.parameters():
+        p.requires_grad = False
+    for p in model.count_head.parameters():
+        p.requires_grad = False
+    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    print(f"  Trainable: {n_trainable:,} (FiLM + embeddings), Frozen: {n_frozen:,} (encoder + heads)")
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,}")
 

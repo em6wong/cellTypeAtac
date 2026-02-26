@@ -231,6 +231,6 @@ class MultiCellChromBPNet(nn.Module):
                 p.requires_grad = False
         n_frozen = sum(1 for p in model.parameters() if not p.requires_grad)
         n_trainable = sum(1 for p in model.parameters() if p.requires_grad)
-        print(f"  Frozen {n_frozen} encoder params, {n_trainable} trainable (FiLM + heads + embeddings)")
+        print(f"  Frozen {n_frozen} encoder params, {n_trainable} trainable (FiLM + norms + heads + embeddings)")
 
         return model

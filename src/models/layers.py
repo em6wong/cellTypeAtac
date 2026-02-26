@@ -180,6 +180,11 @@ class FiLMDilatedConvStack(nn.Module):
 
     Used in Stage 3 multi-cell-type model. Uses valid padding with
     cropped residuals, matching official ChromBPNet dilations (2^1..2^n).
+
+    Each layer applies: conv → LayerNorm → FiLM → residual.
+    LayerNorm before FiLM prevents compound multiplicative growth:
+    without it, FiLM gamma compounds across 8 layers (1.5^8 = 25x),
+    causing feature explosion. LayerNorm bounds each layer's contribution.
     """
 
     def __init__(
@@ -192,6 +197,7 @@ class FiLMDilatedConvStack(nn.Module):
     ):
         super().__init__()
         self.conv_layers = nn.ModuleList()
+        self.norms = nn.ModuleList()
         self.film_layers = nn.ModuleList()
 
         for i in range(1, num_layers + 1):
@@ -200,11 +206,14 @@ class FiLMDilatedConvStack(nn.Module):
                 ConvBlock(channels, channels, kernel_size,
                           dilation=dilation, dropout=dropout)
             )
+            # GroupNorm(1, C) = LayerNorm over (C, L), independent of sequence length
+            self.norms.append(nn.GroupNorm(1, channels))
             self.film_layers.append(FiLMLayer(channels, embedding_dim))
 
     def forward(self, x: torch.Tensor, embedding: torch.Tensor) -> torch.Tensor:
-        for conv, film in zip(self.conv_layers, self.film_layers):
+        for conv, norm, film in zip(self.conv_layers, self.norms, self.film_layers):
             conv_out = conv(x)
+            conv_out = norm(conv_out)
             conv_out = film(conv_out, embedding)
             # Crop residual to match valid-conv output length
             crop = (x.size(2) - conv_out.size(2)) // 2

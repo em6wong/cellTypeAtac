@@ -43,8 +43,6 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data/training")
     parser.add_argument("--output-dir", type=str, default="results/multi_cell")
     parser.add_argument("--gpus", type=int, default=1)
-    parser.add_argument("--single-ct-training", action="store_true", default=True,
-                        help="Train one cell type per batch (Scooby-style)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -190,8 +188,6 @@ def main():
         learning_rate=multi_cell_lr,
         profile_weight=train_cfg["profile_weight"],
         count_weight=count_weight,
-        diff_weight=0.1,
-        single_ct_training=args.single_ct_training,
     )
 
     # Callbacks

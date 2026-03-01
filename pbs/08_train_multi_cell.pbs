@@ -27,7 +27,6 @@ python scripts/08_train_multi_cell.py \
     --init-from "$INIT_CKPT" \
     --data-dir data/training \
     --output-dir results/multi_cell \
-    --gpus 1 \
-    --single-ct-training
+    --gpus 1
 
 echo "End: $(date)"

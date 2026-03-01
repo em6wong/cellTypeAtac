@@ -15,7 +15,7 @@ import numpy as np
 
 from ..models.chrombpnet import ChromBPNet, BiasModel, ChromBPNetWithBias
 from ..models.multi_cell_chrombpnet import MultiCellChromBPNet
-from ..training.loss import ChromBPNetLoss, MultiCellChromBPNetLoss
+from ..training.loss import ChromBPNetLoss
 from ..data.dataset import ATACDataset, BiasDataset
 
 
@@ -152,10 +152,11 @@ class ChromBPNetModule(pl.LightningModule):
 class MultiCellModule(pl.LightningModule):
     """Lightning module for multi-cell-type ChromBPNet (Stage 3).
 
-    Supports two training modes:
-      1. Single cell type per batch (Scooby-style): randomly selects one
-         cell type per forward pass to prevent collapse.
-      2. All cell types: standard multi-output training.
+    Trains all cell types per step: iterates over all cell types in each
+    forward pass, computing per-cell-type loss and averaging. This prevents
+    head output drift that occurs with single-cell-type-per-batch training
+    (where shared FiLM parameter updates change features for all cell types
+    but only one head row receives gradient).
 
     Args:
         model: MultiCellChromBPNet instance.
@@ -163,8 +164,6 @@ class MultiCellModule(pl.LightningModule):
         learning_rate: Learning rate (default 0.001, matching official).
         profile_weight: Profile loss weight (default 1.0).
         count_weight: Count loss weight (default 0.5).
-        diff_weight: Differential penalty weight (default 0.1).
-        single_ct_training: Use single cell type per batch (default True).
     """
 
     def __init__(
@@ -174,69 +173,40 @@ class MultiCellModule(pl.LightningModule):
         learning_rate: float = 0.001,
         profile_weight: float = 1.0,
         count_weight: float = 0.5,
-        diff_weight: float = 0.1,
-        single_ct_training: bool = True,
     ):
         super().__init__()
         self.model = model
         self.num_cell_types = num_cell_types
         self.learning_rate = learning_rate
-        self.single_ct_training = single_ct_training
 
-        self.single_loss_fn = ChromBPNetLoss(profile_weight, count_weight)
-        self.multi_loss_fn = MultiCellChromBPNetLoss(
-            profile_weight, count_weight, diff_weight,
-        )
+        self.loss_fn = ChromBPNetLoss(profile_weight, count_weight)
         self.save_hyperparameters(ignore=["model"])
 
     def forward(self, sequence, cell_type_ids=None):
         return self.model(sequence, cell_type_ids)
 
-    def training_step(self, batch, batch_idx):
-        if self.single_ct_training:
-            # Random cell type per batch (Scooby-style)
-            ct_idx = torch.randint(0, self.num_cell_types, (1,)).item()
+    def _shared_step(self, batch, prefix):
+        total_loss = torch.tensor(0.0, device=batch["sequence"].device)
+        for ct_idx in range(self.num_cell_types):
             out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
-            losses = self.single_loss_fn(
+            losses = self.loss_fn(
                 out["profile"], out["count"],
                 batch["profile"][:, ct_idx],
                 batch["count"][:, ct_idx],
             )
-        else:
-            out = self.model(batch["sequence"])
-            losses = self.multi_loss_fn(
-                out["profile"], out["count"],
-                batch["profile"], batch["count"],
-            )
+            total_loss = total_loss + losses["loss"]
+        total_loss = total_loss / self.num_cell_types
+        self.log(f"{prefix}/loss", total_loss, prog_bar=True)
+        return total_loss
 
-        for k, v in losses.items():
-            self.log(f"train/{k}", v, prog_bar=(k == "loss"))
-        return losses["loss"]
+    def training_step(self, batch, batch_idx):
+        return self._shared_step(batch, "train")
 
     def validation_step(self, batch, batch_idx):
-        # Validate using same strategy as training
-        if self.single_ct_training:
-            ct_idx = torch.randint(0, self.num_cell_types, (1,)).item()
-            out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
-            losses = self.single_loss_fn(
-                out["profile"], out["count"],
-                batch["profile"][:, ct_idx],
-                batch["count"][:, ct_idx],
-            )
-        else:
-            out = self.model(batch["sequence"])
-            losses = self.multi_loss_fn(
-                out["profile"], out["count"],
-                batch["profile"], batch["count"],
-            )
-
-        for k, v in losses.items():
-            self.log(f"val/{k}", v, prog_bar=(k == "loss"))
-        return losses["loss"]
+        return self._shared_step(batch, "val")
 
     def configure_optimizers(self):
-        # Official ChromBPNet uses Adam with constant LR (no scheduler)
         return torch.optim.Adam(
-            self.parameters(),
+            filter(lambda p: p.requires_grad, self.parameters()),
             lr=self.learning_rate,
         )

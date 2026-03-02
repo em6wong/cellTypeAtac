@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Train multi-cell-type ChromBPNet model (Stage 3).
 
-Initializes from the best per-cell-type model and uses FiLM conditioning
-with cell-type embeddings. Single-output heads rely on FiLM for cell-type
-differentiation; Scooby-style training (random cell type per batch).
+Shared encoder with multi-output heads (Enformer/Scooby-style).
+Encoder initialized from best single-cell model, heads initialized
+from all 5 per-cell-type models. Everything is trainable.
 
 Usage:
     python scripts/08_train_multi_cell.py \
@@ -18,6 +18,7 @@ import yaml
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from torch.utils.data import DataLoader
@@ -36,7 +37,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train multi-cell-type ChromBPNet")
     parser.add_argument("--config", type=str, default="configs/chrombpnet.yaml")
     parser.add_argument("--init-from", type=str, default=None,
-                        help="Initialize encoder+heads from per-cell-type checkpoint")
+                        help="Initialize encoder from per-cell-type checkpoint")
+    parser.add_argument("--model-dir", type=str, default="results/chrombpnet",
+                        help="Directory with per-cell-type models for head init")
     parser.add_argument("--data-dir", type=str, default="data/training")
     parser.add_argument("--output-dir", type=str, default="results/multi_cell")
     parser.add_argument("--gpus", type=int, default=1)
@@ -51,13 +54,12 @@ def main():
     model_cfg = config["model"]
     train_cfg = config["training"]
 
-    # Create model — single-output heads, FiLM handles cell-type differentiation
+    # Create model — shared encoder + multi-output heads, no FiLM
     if args.init_from and Path(args.init_from).exists():
-        print(f"Initializing from pre-trained model: {args.init_from}")
+        print(f"Initializing encoder from: {args.init_from}")
         model = MultiCellChromBPNet.from_pretrained_single(
             args.init_from,
             num_cell_types=len(CELL_TYPES),
-            embedding_dim=128,
             input_length=model_cfg["input_length"],
             output_length=model_cfg["output_length"],
             stem_channels=model_cfg["stem_channels"],
@@ -71,7 +73,6 @@ def main():
         print("Training from scratch (no initialization)")
         model = MultiCellChromBPNet(
             num_cell_types=len(CELL_TYPES),
-            embedding_dim=128,
             input_length=model_cfg["input_length"],
             output_length=model_cfg["output_length"],
             stem_channels=model_cfg["stem_channels"],
@@ -82,11 +83,33 @@ def main():
             dropout=model_cfg["dropout"],
         )
 
-    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    # Initialize heads from all per-cell-type models
+    model_dir = Path(args.model_dir)
+    n_heads_loaded = 0
+    for ct_idx, ct in enumerate(CELL_TYPES):
+        ckpt_path = model_dir / ct / "best.ckpt"
+        if not ckpt_path.exists():
+            print(f"  WARNING: No checkpoint for {ct}, head channel {ct_idx} keeps random init")
+            continue
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        if "state_dict" in sd:
+            sd = sd["state_dict"]
+        for k, v in sd.items():
+            if "main_model.profile_head.conv.weight" in k:
+                model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
+            elif "main_model.profile_head.conv.bias" in k:
+                model.profile_head.conv.bias.data[ct_idx] = v.item()
+            elif "main_model.count_head.fc.weight" in k:
+                model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
+            elif "main_model.count_head.fc.bias" in k:
+                model.count_head.fc.bias.data[ct_idx] = v.item()
+        n_heads_loaded += 1
+        print(f"  Transferred heads from {ct}")
+    print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels")
+
+    # Everything is trainable — encoder adapts to all cell types
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Trainable: {n_trainable:,}, Frozen: {n_frozen:,}")
-    print(f"Model parameters: {n_params:,}")
+    print(f"Model parameters: {n_params:,} (all trainable)")
 
     # Datasets
     data_dir = Path(args.data_dir)
@@ -140,7 +163,7 @@ def main():
     else:
         count_weight = float(count_weight)
 
-    # Lightning module
+    # Use lower LR for fine-tuning pre-trained encoder
     multi_cell_lr = train_cfg["learning_rate"] / 10.0
     print(f"Multi-cell learning rate: {multi_cell_lr}")
 

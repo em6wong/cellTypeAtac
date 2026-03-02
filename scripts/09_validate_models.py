@@ -201,7 +201,7 @@ def predict_multi_cell(
     n = 0
     for batch in tqdm(loader, desc="Predicting (multi-cell)"):
         seq = batch["sequence"].to(device)
-        out = model.forward_all_celltypes(seq)  # profile: (B, n_ct, 1000), count: (B, n_ct)
+        out = model(seq)  # profile: (B, n_ct, 1000), count: (B, n_ct)
 
         for ct_idx, ct in enumerate(CELL_TYPES):
             ct_profile = torch.softmax(out["profile"][:, ct_idx, :], dim=-1)
@@ -281,7 +281,7 @@ def test_basic_inference(
         seq = torch.softmax(seq, dim=1)
 
         if is_multi_cell:
-            out = model.forward_all_celltypes(seq)
+            out = model(seq)
             print(f"  Input: {seq.shape}")
             print(f"  Profile output: {out['profile'].shape}")
             print(f"  Count output: {out['count'].shape}")
@@ -576,7 +576,7 @@ def test_marker_specificity_stage3(
         print(f"\n  {gene_name} ({chrom}:{tss:,}), expected: {expected}")
 
         with torch.no_grad():
-            out = model.forward_all_celltypes(seq)  # profile: (1, n_ct, 1000), count: (1, n_ct)
+            out = model(seq)  # profile: (1, n_ct, 1000), count: (1, n_ct)
 
         pred_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
 
@@ -735,7 +735,7 @@ def test_prediction_variability(
 
         with torch.no_grad():
             if is_multi_cell:
-                out = model.forward_all_celltypes(seq)
+                out = model(seq)
             else:
                 out = model(seq)
 

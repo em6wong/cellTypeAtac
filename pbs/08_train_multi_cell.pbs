@@ -25,6 +25,7 @@ rm -f results/multi_cell/best*.ckpt
 python scripts/08_train_multi_cell.py \
     --config configs/chrombpnet.yaml \
     --init-from "$INIT_CKPT" \
+    --model-dir results/chrombpnet \
     --data-dir data/training \
     --output-dir results/multi_cell \
     --gpus 1

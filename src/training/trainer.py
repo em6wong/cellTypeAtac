@@ -152,11 +152,11 @@ class ChromBPNetModule(pl.LightningModule):
 class MultiCellModule(pl.LightningModule):
     """Lightning module for multi-cell-type ChromBPNet (Stage 3).
 
-    Trains all cell types per step: iterates over all cell types in each
-    forward pass, computing per-cell-type loss and averaging. This prevents
-    head output drift that occurs with single-cell-type-per-batch training
-    (where shared FiLM parameter updates change features for all cell types
-    but only one head row receives gradient).
+    Uses Scooby-style training: randomly selects one cell type per batch.
+    Safe with single-output heads (no multi-output drift). Each step:
+    1. Pick random cell type
+    2. Forward pass with that cell type's FiLM conditioning
+    3. Compute loss against that cell type's target
 
     Args:
         model: MultiCellChromBPNet instance.
@@ -182,22 +182,20 @@ class MultiCellModule(pl.LightningModule):
         self.loss_fn = ChromBPNetLoss(profile_weight, count_weight)
         self.save_hyperparameters(ignore=["model"])
 
-    def forward(self, sequence, cell_type_ids=None):
+    def forward(self, sequence, cell_type_ids):
         return self.model(sequence, cell_type_ids)
 
     def _shared_step(self, batch, prefix):
-        total_loss = torch.tensor(0.0, device=batch["sequence"].device)
-        for ct_idx in range(self.num_cell_types):
-            out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
-            losses = self.loss_fn(
-                out["profile"], out["count"],
-                batch["profile"][:, ct_idx],
-                batch["count"][:, ct_idx],
-            )
-            total_loss = total_loss + losses["loss"]
-        total_loss = total_loss / self.num_cell_types
-        self.log(f"{prefix}/loss", total_loss, prog_bar=True)
-        return total_loss
+        ct_idx = torch.randint(0, self.num_cell_types, (1,)).item()
+        out = self.model.forward_single_celltype(batch["sequence"], ct_idx)
+        losses = self.loss_fn(
+            out["profile"], out["count"],
+            batch["profile"][:, ct_idx],
+            batch["count"][:, ct_idx],
+        )
+        for k, v in losses.items():
+            self.log(f"{prefix}/{k}", v, prog_bar=(k == "loss"))
+        return losses["loss"]
 
     def training_step(self, batch, batch_idx):
         return self._shared_step(batch, "train")

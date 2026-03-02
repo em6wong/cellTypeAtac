@@ -201,7 +201,7 @@ def predict_multi_cell(
     n = 0
     for batch in tqdm(loader, desc="Predicting (multi-cell)"):
         seq = batch["sequence"].to(device)
-        out = model(seq)  # profile: (B, n_ct, 1000), count: (B, n_ct)
+        out = model.forward_all_celltypes(seq)  # profile: (B, n_ct, 1000), count: (B, n_ct)
 
         for ct_idx, ct in enumerate(CELL_TYPES):
             ct_profile = torch.softmax(out["profile"][:, ct_idx, :], dim=-1)
@@ -281,7 +281,7 @@ def test_basic_inference(
         seq = torch.softmax(seq, dim=1)
 
         if is_multi_cell:
-            out = model(seq)
+            out = model.forward_all_celltypes(seq)
             print(f"  Input: {seq.shape}")
             print(f"  Profile output: {out['profile'].shape}")
             print(f"  Count output: {out['count'].shape}")
@@ -576,7 +576,7 @@ def test_marker_specificity_stage3(
         print(f"\n  {gene_name} ({chrom}:{tss:,}), expected: {expected}")
 
         with torch.no_grad():
-            out = model(seq)  # profile: (1, n_ct, 1000), count: (1, n_ct)
+            out = model.forward_all_celltypes(seq)  # profile: (1, n_ct, 1000), count: (1, n_ct)
 
         pred_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
 
@@ -734,7 +734,10 @@ def test_prediction_variability(
         seq = torch.softmax(seq, dim=1)
 
         with torch.no_grad():
-            out = model(seq)
+            if is_multi_cell:
+                out = model.forward_all_celltypes(seq)
+            else:
+                out = model(seq)
 
         pred = out["count"].squeeze().cpu().numpy()
         predictions.append(pred)
@@ -1138,7 +1141,7 @@ def test_motif_perturbation_stage3(
     bg_seq_str = str(genome["chr10"][bg_center - half:bg_center + half]).upper()
     bg_tensor = _one_hot_encode(bg_seq_str).unsqueeze(0).to(device)
 
-    out = model(bg_tensor)
+    out = model.forward_all_celltypes(bg_tensor)
     baseline_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()  # (n_ct,)
 
     results = {}
@@ -1158,7 +1161,7 @@ def test_motif_perturbation_stage3(
                              bg_seq_str[center + len(motif_seq):])
             perturbed = _one_hot_encode(perturbed_str).unsqueeze(0).to(device)
 
-            out = model(perturbed)
+            out = model.forward_all_celltypes(perturbed)
             perturbed_counts = torch.expm1(out["count"]).squeeze(0).cpu().numpy()
 
             fold_changes = perturbed_counts / (baseline_counts + 1e-8)

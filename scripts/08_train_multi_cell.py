@@ -2,8 +2,8 @@
 """Train multi-cell-type ChromBPNet model (Stage 3).
 
 Initializes from the best per-cell-type model and uses FiLM conditioning
-with cell-type embeddings. Anti-collapse training with Scooby-style
-single cell type per forward pass.
+with cell-type embeddings. Single-output heads rely on FiLM for cell-type
+differentiation; Scooby-style training (random cell type per batch).
 
 Usage:
     python scripts/08_train_multi_cell.py \
@@ -18,10 +18,9 @@ import yaml
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader
 
 from src.models.multi_cell_chrombpnet import MultiCellChromBPNet
 from src.training.trainer import MultiCellModule
@@ -37,9 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train multi-cell-type ChromBPNet")
     parser.add_argument("--config", type=str, default="configs/chrombpnet.yaml")
     parser.add_argument("--init-from", type=str, default=None,
-                        help="Initialize encoder from per-cell-type checkpoint")
-    parser.add_argument("--model-dir", type=str, default="results/chrombpnet",
-                        help="Directory with per-cell-type models for head init")
+                        help="Initialize encoder+heads from per-cell-type checkpoint")
     parser.add_argument("--data-dir", type=str, default="data/training")
     parser.add_argument("--output-dir", type=str, default="results/multi_cell")
     parser.add_argument("--gpus", type=int, default=1)
@@ -54,7 +51,7 @@ def main():
     model_cfg = config["model"]
     train_cfg = config["training"]
 
-    # Create model
+    # Create model — single-output heads, FiLM handles cell-type differentiation
     if args.init_from and Path(args.init_from).exists():
         print(f"Initializing from pre-trained model: {args.init_from}")
         model = MultiCellChromBPNet.from_pretrained_single(
@@ -85,46 +82,14 @@ def main():
             dropout=model_cfg["dropout"],
         )
 
-    # Transfer profile and count heads from all per-cell-type models
-    model_dir = Path(args.model_dir)
-    n_heads_loaded = 0
-    for ct_idx, ct in enumerate(CELL_TYPES):
-        ckpt_path = model_dir / ct / "best.ckpt"
-        if not ckpt_path.exists():
-            print(f"  WARNING: No checkpoint for {ct}, head channel {ct_idx} keeps random init")
-            continue
-        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        if "state_dict" in sd:
-            sd = sd["state_dict"]
-        # Match main_model keys only (not bias_model which has fewer channels)
-        for k, v in sd.items():
-            if "main_model.profile_head.conv.weight" in k:
-                model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
-            elif "main_model.profile_head.conv.bias" in k:
-                model.profile_head.conv.bias.data[ct_idx] = v.item()
-            elif "main_model.count_head.fc.weight" in k:
-                model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
-            elif "main_model.count_head.fc.bias" in k:
-                model.count_head.fc.bias.data[ct_idx] = v.item()
-        n_heads_loaded += 1
-        print(f"  Transferred heads from {ct}")
-    print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels from single-cell models")
-
-    # Heads are trainable: each cell type's head was trained with its own encoder,
-    # but here they share the Cardiomyocyte encoder.  Heads must adapt to the
-    # shared encoder's features.  LayerNorm before FiLM prevents the co-adaptation
-    # explosion that previously required freezing heads.
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    print(f"  Trainable: {n_trainable:,} (FiLM + norms + heads + embeddings), Frozen: {n_frozen:,} (encoder)")
-
     n_params = sum(p.numel() for p in model.parameters())
+    print(f"  Trainable: {n_trainable:,}, Frozen: {n_frozen:,}")
     print(f"Model parameters: {n_params:,}")
 
-    # Datasets: load profiles from ALL cell types for the same regions
+    # Datasets
     data_dir = Path(args.data_dir)
-
-    # Collect zarr paths for all cell types (must all exist)
     train_zarrs = []
     val_zarrs = []
     for ct in CELL_TYPES:
@@ -164,7 +129,6 @@ def main():
     # Compute count loss weight
     count_weight = train_cfg["count_weight"]
     if count_weight == "auto":
-        # Sample counts from training data (mean across cell types)
         n_samples = min(5000, len(train_ds))
         indices = np.random.choice(len(train_ds), n_samples, replace=False)
         counts = []
@@ -176,9 +140,7 @@ def main():
     else:
         count_weight = float(count_weight)
 
-    # Lightning module — use lower LR than single-cell (0.0001 vs 0.001)
-    # since heads are already well-initialized from per-cell-type models
-    # and we only need FiLM to learn small cell-type modulations.
+    # Lightning module
     multi_cell_lr = train_cfg["learning_rate"] / 10.0
     print(f"Multi-cell learning rate: {multi_cell_lr}")
 
@@ -218,10 +180,6 @@ def main():
         except ImportError:
             pass
 
-    # Trainer — use bf16-mixed (not fp16) because FiLM gamma multiplies
-    # features at each of 8 dilated conv layers; the compound growth can
-    # exceed fp16 max (65504) after ~1500 steps, but bf16 shares float32's
-    # exponent range (max 3.4e38).  Gradient clipping for extra stability.
     trainer = pl.Trainer(
         max_epochs=train_cfg["max_epochs"],
         accelerator="gpu" if args.gpus > 0 else "cpu",

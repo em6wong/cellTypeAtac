@@ -1,15 +1,16 @@
 """Multi-cell-type ChromBPNet model (Stage 3).
 
 Uses FiLM conditioning with cell-type embeddings to predict profiles
-for all cell types from a shared encoder. Designed with anti-collapse
-measures informed by the multiome project's lessons.
+for all cell types from a shared encoder. Single-output heads rely on
+FiLM to produce cell-type-specific features; the heads just convert
+features to predictions.
 
 Architecture:
     Input: 2114bp one-hot DNA (4, 2114) + cell_type_id
     → Stem: Conv1d(4→512, k=21, valid) + ReLU
     → FiLM-conditioned Dilated Conv Stack: 8 layers (d=2..256) with cell-type FiLM
-    → Profile Head: Conv1d(512→n_cell_types, k=75, valid)
-    → Count Head: AdaptiveAvgPool1d(1) → Linear(512→n_cell_types)
+    → Profile Head: Conv1d(512→1, k=75, valid)
+    → Count Head: AdaptiveAvgPool1d(1) → Linear(512→1)
 """
 
 import torch
@@ -24,11 +25,10 @@ from .layers import (
 class MultiCellChromBPNet(nn.Module):
     """Multi-cell-type ChromBPNet with FiLM conditioning.
 
-    Anti-collapse measures:
-      1. FiLM conditioning at every dilated conv layer
-      2. Support for single-cell-type training per forward pass (Scooby-style)
-      3. Differential loss penalty on collapsed predictions
-      4. Can initialize from pre-trained per-cell-type model
+    Uses single-output heads (1 channel) with FiLM conditioning for
+    cell-type differentiation. This avoids the multi-output drift problem
+    where unconstrained head rows explode when features are modulated
+    by different cell type embeddings.
 
     Args:
         num_cell_types: Number of cell types (default 5).
@@ -76,43 +76,30 @@ class MultiCellChromBPNet(nn.Module):
             dropout=dropout,
         )
 
-        # Multi-output heads
+        # Single-output heads — FiLM handles cell-type differentiation
         self.profile_head = ProfileHead(
-            stem_channels, num_outputs=num_cell_types,
+            stem_channels, num_outputs=1,
             output_length=output_length, kernel_size=profile_kernel_size,
         )
-        self.count_head = CountHead(stem_channels, num_outputs=num_cell_types)
+        self.count_head = CountHead(stem_channels, num_outputs=1)
 
     def forward(
         self,
         sequence: torch.Tensor,
-        cell_type_ids: Optional[torch.Tensor] = None,
+        cell_type_ids: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass.
+        """Forward pass for a specific cell type.
 
         Args:
             sequence: One-hot DNA (batch, 4, input_length).
-            cell_type_ids: Optional cell type indices (batch,).
-                If provided, uses FiLM conditioning for that cell type
-                and returns predictions for all cell types.
-                If None, returns predictions for all cell types using
-                a mean embedding (useful for evaluation).
+            cell_type_ids: Cell type indices (batch,).
 
         Returns:
             Dict with:
-                'profile': (batch, n_cell_types, output_length)
-                'count': (batch, n_cell_types)
+                'profile': (batch, output_length)
+                'count': (batch,)
         """
-        batch_size = sequence.size(0)
-
-        # Get cell-type embedding
-        if cell_type_ids is not None:
-            embedding = self.cell_type_embedding(cell_type_ids)  # (batch, emb_dim)
-        else:
-            # Use mean embedding for evaluation
-            all_ids = torch.arange(self.num_cell_types, device=sequence.device)
-            all_emb = self.cell_type_embedding(all_ids)  # (n_ct, emb_dim)
-            embedding = all_emb.mean(dim=0).unsqueeze(0).expand(batch_size, -1)
+        embedding = self.cell_type_embedding(cell_type_ids)  # (batch, emb_dim)
 
         # Shared stem
         x = self.stem(sequence)
@@ -120,9 +107,9 @@ class MultiCellChromBPNet(nn.Module):
         # FiLM-conditioned dilated convs
         x = self.dilated_convs(x, embedding)
 
-        # Prediction heads
-        profile = self.profile_head(x)  # (batch, n_cell_types, output_length)
-        count = self.count_head(x)       # (batch, n_cell_types)
+        # Prediction heads (single output, squeeze channel dim)
+        profile = self.profile_head(x).squeeze(1)  # (batch, output_length)
+        count = self.count_head(x).squeeze(-1)      # (batch,)
 
         return {"profile": profile, "count": count}
 
@@ -131,10 +118,7 @@ class MultiCellChromBPNet(nn.Module):
         sequence: torch.Tensor,
         cell_type_idx: int,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass for a single cell type (Scooby-style training).
-
-        During training, process one random cell type per batch to prevent
-        the model from learning collapsed (identical) predictions.
+        """Forward pass for a single cell type.
 
         Args:
             sequence: One-hot DNA (batch, 4, input_length).
@@ -147,11 +131,33 @@ class MultiCellChromBPNet(nn.Module):
             (sequence.size(0),), cell_type_idx,
             dtype=torch.long, device=sequence.device,
         )
-        out = self.forward(sequence, cell_type_ids)
+        return self.forward(sequence, cell_type_ids)
 
+    def forward_all_celltypes(
+        self,
+        sequence: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass for all cell types, returning stacked outputs.
+
+        Runs one forward pass per cell type and stacks results.
+
+        Args:
+            sequence: One-hot DNA (batch, 4, input_length).
+
+        Returns:
+            Dict with:
+                'profile': (batch, n_cell_types, output_length)
+                'count': (batch, n_cell_types)
+        """
+        profiles = []
+        counts = []
+        for ct_idx in range(self.num_cell_types):
+            out = self.forward_single_celltype(sequence, ct_idx)
+            profiles.append(out["profile"])
+            counts.append(out["count"])
         return {
-            "profile": out["profile"][:, cell_type_idx, :],
-            "count": out["count"][:, cell_type_idx],
+            "profile": torch.stack(profiles, dim=1),
+            "count": torch.stack(counts, dim=1),
         }
 
     @classmethod
@@ -164,8 +170,8 @@ class MultiCellChromBPNet(nn.Module):
     ) -> "MultiCellChromBPNet":
         """Initialize from a pre-trained per-cell-type ChromBPNet.
 
-        Transfers the shared conv stack weights from the best single-cell-type
-        model. Profile and count heads are re-initialized.
+        Transfers stem, dilated conv, and head weights. The single-output
+        heads match the single-cell model's head shapes exactly.
 
         Args:
             checkpoint_path: Path to single-cell-type model checkpoint.
@@ -206,8 +212,6 @@ class MultiCellChromBPNet(nn.Module):
                 strict=False,
             )
             print(f"  Transferred {len(stem_keys)} stem parameters")
-        else:
-            print("  WARNING: No stem weights found in checkpoint")
 
         # Transfer dilated conv weights (conv layers only, not FiLM)
         n_transferred = 0
@@ -223,7 +227,18 @@ class MultiCellChromBPNet(nn.Module):
                 n_transferred += len(matching)
         print(f"  Transferred {n_transferred} dilated conv parameters")
 
-        # Freeze transferred encoder so only FiLM, heads, and embeddings train
+        # Transfer head weights (single-output heads match single-cell shapes)
+        head_keys = {k: v for k, v in state_dict.items()
+                     if k.startswith("profile_head.") or k.startswith("count_head.")}
+        if head_keys:
+            model_sd = model.state_dict()
+            for k, v in head_keys.items():
+                if k in model_sd and model_sd[k].shape == v.shape:
+                    model_sd[k] = v
+            model.load_state_dict(model_sd)
+            print(f"  Transferred {len(head_keys)} head parameters")
+
+        # Freeze transferred encoder so only FiLM, norms, heads, and embeddings train
         for p in model.stem.parameters():
             p.requires_grad = False
         for conv_layer in model.dilated_convs.conv_layers:

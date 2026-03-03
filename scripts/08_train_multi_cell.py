@@ -163,8 +163,7 @@ def main():
     else:
         count_weight = float(count_weight)
 
-    # Use lower LR for fine-tuning pre-trained encoder
-    multi_cell_lr = train_cfg["learning_rate"] / 10.0
+    multi_cell_lr = train_cfg["learning_rate"]
     print(f"Multi-cell learning rate: {multi_cell_lr}")
 
     module = MultiCellModule(

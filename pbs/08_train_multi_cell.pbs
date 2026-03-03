@@ -11,20 +11,15 @@
 cd /srv/scratch/fabilab/emily/cellTypeAtac
 source scripts/setup_env.sh
 
-# Initialize from best per-cell-type model
-# Update this path after step 06 completes
-INIT_CKPT="results/chrombpnet/Cardiomyocyte/best.ckpt"
-
 echo "=== Train Multi-Cell ChromBPNet ==="
 echo "Start: $(date)"
-echo "Init from: $INIT_CKPT"
+echo "Training from scratch (heads initialized from per-cell-type models)"
 
 # Remove old checkpoints to prevent ModelCheckpoint versioning (best-v1, v2, ...)
 rm -f results/multi_cell/best*.ckpt
 
 python scripts/08_train_multi_cell.py \
     --config configs/chrombpnet.yaml \
-    --init-from "$INIT_CKPT" \
     --model-dir results/chrombpnet \
     --data-dir data/training \
     --output-dir results/multi_cell \

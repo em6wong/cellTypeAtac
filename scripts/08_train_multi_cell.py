@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Train multi-cell-type ChromBPNet model (Stage 3).
 
-Shared encoder with multi-output heads (Enformer/Scooby-style).
-Encoder initialized from best single-cell model, heads initialized
-from all 5 per-cell-type models. Everything is trainable.
+Shared encoder with separate per-cell-type heads. Each cell type gets
+its own task-specific GroupNorm, ProfileHead, and CountHead. Heads
+initialized from per-cell-type models. Uses uncertainty weighting
+and orthogonality regularization for better cell-type differentiation.
 
 Usage:
     python scripts/08_train_multi_cell.py \
@@ -83,26 +84,26 @@ def main():
             dropout=model_cfg["dropout"],
         )
 
-    # Initialize heads from all per-cell-type models
+    # Initialize separate heads from all per-cell-type models
     model_dir = Path(args.model_dir)
     n_heads_loaded = 0
     for ct_idx, ct in enumerate(CELL_TYPES):
         ckpt_path = model_dir / ct / "best.ckpt"
         if not ckpt_path.exists():
-            print(f"  WARNING: No checkpoint for {ct}, head channel {ct_idx} keeps random init")
+            print(f"  WARNING: No checkpoint for {ct}, head {ct_idx} keeps random init")
             continue
         sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         if "state_dict" in sd:
             sd = sd["state_dict"]
         for k, v in sd.items():
             if "main_model.profile_head.conv.weight" in k:
-                model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
+                model.profile_heads[ct_idx].conv.weight.data.copy_(v)
             elif "main_model.profile_head.conv.bias" in k:
-                model.profile_head.conv.bias.data[ct_idx] = v.item()
+                model.profile_heads[ct_idx].conv.bias.data.copy_(v)
             elif "main_model.count_head.fc.weight" in k:
-                model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
+                model.count_heads[ct_idx].fc.weight.data.copy_(v)
             elif "main_model.count_head.fc.bias" in k:
-                model.count_head.fc.bias.data[ct_idx] = v.item()
+                model.count_heads[ct_idx].fc.bias.data.copy_(v)
         n_heads_loaded += 1
         print(f"  Transferred heads from {ct}")
     print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels")

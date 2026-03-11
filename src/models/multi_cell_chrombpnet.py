@@ -1,15 +1,18 @@
 """Multi-cell-type ChromBPNet model (Stage 3).
 
-Shared encoder with multi-output heads (Enformer/Scooby-style).
-No cell-type conditioning in the encoder — the encoder learns general
-DNA sequence features, and each head channel specializes for one cell type.
+Shared encoder with separate per-cell-type output heads.
+Each cell type gets its own ProfileHead and CountHead, allowing
+independent feature selection from the shared encoder.
+Task-specific normalization (GroupNorm) before each head gives
+each cell type a different view of the shared features.
 
 Architecture:
     Input: 2114bp one-hot DNA (4, 2114)
     → Stem: Conv1d(4→512, k=21, valid) + ReLU
     → Dilated Conv Stack: 8 layers (d=2..256), same as single-cell ChromBPNet
-    → Profile Head: Conv1d(512→n_cell_types, k=75, valid)
-    → Count Head: AdaptiveAvgPool1d(1) → Linear(512→n_cell_types)
+    → Per-cell-type GroupNorm(1, 512)
+    → Per-cell-type ProfileHead: Conv1d(512→1, k=75, valid)
+    → Per-cell-type CountHead: AdaptiveAvgPool1d(1) → Linear(512→1)
 """
 
 import torch
@@ -20,11 +23,16 @@ from .layers import ConvBlock, DilatedConvStack, ProfileHead, CountHead
 
 
 class MultiCellChromBPNet(nn.Module):
-    """Multi-cell-type ChromBPNet with shared encoder and multi-output heads.
+    """Multi-cell-type ChromBPNet with shared encoder and separate heads.
 
-    Same architecture as single-cell ChromBPNet but with n_cell_types
-    output channels instead of 1. All cell types share the encoder;
-    each head channel specializes for one cell type.
+    Each cell type gets:
+    - Its own GroupNorm (task-specific normalization)
+    - Its own ProfileHead (512→1, k=75)
+    - Its own CountHead (512→1)
+
+    This is strictly more expressive than a single multi-channel head,
+    and task-specific normalization allows each cell type to amplify
+    different features from the shared encoder.
 
     Args:
         num_cell_types: Number of cell types (default 5).
@@ -64,12 +72,19 @@ class MultiCellChromBPNet(nn.Module):
             dropout=dropout,
         )
 
-        # Multi-output heads
-        self.profile_head = ProfileHead(
-            stem_channels, num_outputs=num_cell_types,
-            output_length=output_length, kernel_size=profile_kernel_size,
-        )
-        self.count_head = CountHead(stem_channels, num_outputs=num_cell_types)
+        # Per-cell-type normalization + heads
+        self.task_norms = nn.ModuleList([
+            nn.GroupNorm(1, stem_channels) for _ in range(num_cell_types)
+        ])
+        self.profile_heads = nn.ModuleList([
+            ProfileHead(stem_channels, num_outputs=1,
+                        output_length=output_length, kernel_size=profile_kernel_size)
+            for _ in range(num_cell_types)
+        ])
+        self.count_heads = nn.ModuleList([
+            CountHead(stem_channels, num_outputs=1)
+            for _ in range(num_cell_types)
+        ])
 
     def forward(
         self,
@@ -87,8 +102,18 @@ class MultiCellChromBPNet(nn.Module):
         """
         x = self.stem(sequence)
         x = self.dilated_convs(x)
-        profile = self.profile_head(x)  # (batch, n_cell_types, output_length)
-        count = self.count_head(x)       # (batch, n_cell_types)
+
+        profiles = []
+        counts = []
+        for ct_idx in range(self.num_cell_types):
+            x_ct = self.task_norms[ct_idx](x)
+            # Squeeze single output channel: (batch, 1, length) → (batch, length)
+            profiles.append(self.profile_heads[ct_idx](x_ct).squeeze(1))
+            # Squeeze single output: (batch, 1) → (batch,)
+            counts.append(self.count_heads[ct_idx](x_ct).squeeze(-1))
+
+        profile = torch.stack(profiles, dim=1)  # (batch, n_ct, output_length)
+        count = torch.stack(counts, dim=1)       # (batch, n_ct)
         return {"profile": profile, "count": count}
 
     def forward_single_celltype(
@@ -117,65 +142,3 @@ class MultiCellChromBPNet(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Alias for forward() — returns all cell types."""
         return self.forward(sequence)
-
-    @classmethod
-    def from_pretrained_single(
-        cls,
-        checkpoint_path: str,
-        num_cell_types: int = 5,
-        **kwargs,
-    ) -> "MultiCellChromBPNet":
-        """Initialize encoder from a pre-trained single-cell ChromBPNet.
-
-        Transfers stem and dilated conv weights. Heads are randomly
-        initialized (use init_heads_from_models() to transfer heads).
-
-        Args:
-            checkpoint_path: Path to single-cell-type model checkpoint.
-            num_cell_types: Number of cell types.
-            **kwargs: Additional model arguments.
-
-        Returns:
-            MultiCellChromBPNet with transferred encoder weights.
-        """
-        state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        if "state_dict" in state_dict:
-            state_dict = state_dict["state_dict"]
-
-        # Strip Lightning module prefix
-        cleaned = {}
-        for k, v in state_dict.items():
-            if k.startswith("model.main_model."):
-                cleaned[k.replace("model.main_model.", "")] = v
-            elif k.startswith("model."):
-                cleaned[k.replace("model.", "")] = v
-            else:
-                cleaned[k] = v
-        state_dict = cleaned
-
-        model = cls(num_cell_types=num_cell_types, **kwargs)
-
-        # Transfer stem
-        stem_keys = {k: v for k, v in state_dict.items() if k.startswith("stem.")}
-        if stem_keys:
-            model.stem.load_state_dict(
-                {k.replace("stem.", "", 1): v for k, v in stem_keys.items()},
-                strict=False,
-            )
-            print(f"  Transferred {len(stem_keys)} stem parameters")
-
-        # Transfer dilated conv weights
-        n_transferred = 0
-        for i, layer in enumerate(model.dilated_convs.layers):
-            src_prefix = f"dilated_convs.layers.{i}."
-            matching = {
-                k.replace(src_prefix, ""): v
-                for k, v in state_dict.items()
-                if k.startswith(src_prefix)
-            }
-            if matching:
-                layer.load_state_dict(matching, strict=False)
-                n_transferred += len(matching)
-        print(f"  Transferred {n_transferred} dilated conv parameters")
-
-        return model

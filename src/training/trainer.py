@@ -152,8 +152,11 @@ class ChromBPNetModule(pl.LightningModule):
 class MultiCellModule(pl.LightningModule):
     """Lightning module for multi-cell-type ChromBPNet (Stage 3).
 
-    Single forward pass produces all cell type outputs. Loss is summed
-    across cell types per batch.
+    Single forward pass produces all cell type outputs. Uses:
+    - Uncertainty weighting (Kendall et al. 2018): learns per-cell-type
+      loss weights automatically via homoscedastic uncertainty
+    - Orthogonality regularization: pushes profile head weights to be
+      different across cell types
 
     Args:
         model: MultiCellChromBPNet instance.
@@ -161,6 +164,7 @@ class MultiCellModule(pl.LightningModule):
         learning_rate: Learning rate (default 0.001, matching official).
         profile_weight: Profile loss weight (default 1.0).
         count_weight: Count loss weight (default 0.5).
+        ortho_weight: Weight for orthogonality regularization (default 0.01).
     """
 
     def __init__(
@@ -170,21 +174,44 @@ class MultiCellModule(pl.LightningModule):
         learning_rate: float = 0.001,
         profile_weight: float = 1.0,
         count_weight: float = 0.5,
+        ortho_weight: float = 0.01,
     ):
         super().__init__()
         self.model = model
         self.num_cell_types = num_cell_types
         self.learning_rate = learning_rate
+        self.ortho_weight = ortho_weight
 
         self.loss_fn = ChromBPNetLoss(profile_weight, count_weight)
+
+        # Learnable per-cell-type log-variance for uncertainty weighting
+        self.log_vars = nn.Parameter(torch.zeros(num_cell_types))
+
         self.save_hyperparameters(ignore=["model"])
 
     def forward(self, sequence):
         return self.model(sequence)
 
+    def _ortho_loss(self):
+        """Orthogonality regularization on profile head conv weights.
+
+        Penalizes similarity between different cell types' profile filters,
+        forcing each head to learn distinct feature combinations.
+        """
+        weights = []
+        for head in self.model.profile_heads:
+            weights.append(head.conv.weight.view(-1))  # flatten each head's weights
+        W = torch.stack(weights)  # (n_ct, n_params)
+        # Normalize rows for cosine-similarity-based orthogonality
+        W_norm = W / (W.norm(dim=1, keepdim=True) + 1e-8)
+        gram = W_norm @ W_norm.T  # (n_ct, n_ct)
+        identity = torch.eye(self.num_cell_types, device=gram.device)
+        return ((gram - identity) ** 2).sum()
+
     def _shared_step(self, batch, prefix):
         out = self.model(batch["sequence"])
-        # Sum per-cell-type losses
+
+        # Per-cell-type losses with uncertainty weighting
         total_loss = torch.tensor(0.0, device=batch["sequence"].device)
         for ct_idx in range(self.num_cell_types):
             losses = self.loss_fn(
@@ -193,8 +220,17 @@ class MultiCellModule(pl.LightningModule):
                 batch["profile"][:, ct_idx],
                 batch["count"][:, ct_idx],
             )
-            total_loss = total_loss + losses["loss"]
+            # Uncertainty weighting: precision * loss + log_var
+            precision = torch.exp(-self.log_vars[ct_idx])
+            total_loss = total_loss + precision * losses["loss"] + self.log_vars[ct_idx]
         total_loss = total_loss / self.num_cell_types
+
+        # Orthogonality regularization (only during training)
+        if prefix == "train":
+            ortho = self._ortho_loss()
+            total_loss = total_loss + self.ortho_weight * ortho
+            self.log("train/ortho_loss", ortho, prog_bar=False)
+
         self.log(f"{prefix}/loss", total_loss, prog_bar=True)
         return total_loss
 

@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 """Train multi-cell-type ChromBPNet model (Stage 3).
 
-Shared encoder with separate per-cell-type heads. Each cell type gets
-its own task-specific GroupNorm, ProfileHead, and CountHead. Heads
-initialized from per-cell-type models. Uses uncertainty weighting
-and orthogonality regularization for better cell-type differentiation.
+Shared encoder with output heads. Supports variant flags for ablation:
+  --separate-heads: independent heads per cell type
+  --task-norms: per-cell-type GroupNorm before heads
+  --uncertainty-weighting: learned per-cell-type loss weights
+  --ortho-weight: orthogonality regularization on head weights
 
 Usage:
     python scripts/08_train_multi_cell.py \
         --config configs/chrombpnet.yaml \
-        --init-from results/chrombpnet/Cardiomyocyte/best.ckpt \
+        --model-dir results/chrombpnet \
         --output-dir results/multi_cell
 """
 
@@ -37,13 +38,20 @@ CELL_TYPES = ["Cardiomyocyte", "Coronary_EC", "Fibroblast", "Macrophage", "Peric
 def main():
     parser = argparse.ArgumentParser(description="Train multi-cell-type ChromBPNet")
     parser.add_argument("--config", type=str, default="configs/chrombpnet.yaml")
-    parser.add_argument("--init-from", type=str, default=None,
-                        help="Initialize encoder from per-cell-type checkpoint")
     parser.add_argument("--model-dir", type=str, default="results/chrombpnet",
                         help="Directory with per-cell-type models for head init")
     parser.add_argument("--data-dir", type=str, default="data/training")
     parser.add_argument("--output-dir", type=str, default="results/multi_cell")
     parser.add_argument("--gpus", type=int, default=1)
+    # Variant flags
+    parser.add_argument("--separate-heads", action="store_true",
+                        help="Use independent heads per cell type")
+    parser.add_argument("--task-norms", action="store_true",
+                        help="Add per-cell-type GroupNorm before heads")
+    parser.add_argument("--uncertainty-weighting", action="store_true",
+                        help="Learn per-cell-type loss weights (Kendall 2018)")
+    parser.add_argument("--ortho-weight", type=float, default=0.0,
+                        help="Orthogonality regularization weight (0 = off)")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -55,36 +63,35 @@ def main():
     model_cfg = config["model"]
     train_cfg = config["training"]
 
-    # Create model — shared encoder + multi-output heads, no FiLM
-    if args.init_from and Path(args.init_from).exists():
-        print(f"Initializing encoder from: {args.init_from}")
-        model = MultiCellChromBPNet.from_pretrained_single(
-            args.init_from,
-            num_cell_types=len(CELL_TYPES),
-            input_length=model_cfg["input_length"],
-            output_length=model_cfg["output_length"],
-            stem_channels=model_cfg["stem_channels"],
-            stem_kernel_size=model_cfg["stem_kernel_size"],
-            num_dilated_layers=model_cfg["num_dilated_layers"],
-            dilated_kernel_size=model_cfg["dilated_kernel_size"],
-            profile_kernel_size=model_cfg["profile_kernel_size"],
-            dropout=model_cfg["dropout"],
-        )
-    else:
-        print("Training from scratch (no initialization)")
-        model = MultiCellChromBPNet(
-            num_cell_types=len(CELL_TYPES),
-            input_length=model_cfg["input_length"],
-            output_length=model_cfg["output_length"],
-            stem_channels=model_cfg["stem_channels"],
-            stem_kernel_size=model_cfg["stem_kernel_size"],
-            num_dilated_layers=model_cfg["num_dilated_layers"],
-            dilated_kernel_size=model_cfg["dilated_kernel_size"],
-            profile_kernel_size=model_cfg["profile_kernel_size"],
-            dropout=model_cfg["dropout"],
-        )
+    # Print variant config
+    variants = []
+    if args.separate_heads:
+        variants.append("separate_heads")
+    if args.task_norms:
+        variants.append("task_norms")
+    if args.uncertainty_weighting:
+        variants.append("uncertainty_weighting")
+    if args.ortho_weight > 0:
+        variants.append(f"ortho_weight={args.ortho_weight}")
+    print(f"Variant: {', '.join(variants) if variants else 'base (no variants)'}")
 
-    # Initialize separate heads from all per-cell-type models
+    # Create model
+    print("Training from scratch (heads initialized from per-cell-type models)")
+    model = MultiCellChromBPNet(
+        num_cell_types=len(CELL_TYPES),
+        input_length=model_cfg["input_length"],
+        output_length=model_cfg["output_length"],
+        stem_channels=model_cfg["stem_channels"],
+        stem_kernel_size=model_cfg["stem_kernel_size"],
+        num_dilated_layers=model_cfg["num_dilated_layers"],
+        dilated_kernel_size=model_cfg["dilated_kernel_size"],
+        profile_kernel_size=model_cfg["profile_kernel_size"],
+        dropout=model_cfg["dropout"],
+        separate_heads=args.separate_heads,
+        task_norms=args.task_norms,
+    )
+
+    # Initialize heads from all per-cell-type models
     model_dir = Path(args.model_dir)
     n_heads_loaded = 0
     for ct_idx, ct in enumerate(CELL_TYPES):
@@ -95,20 +102,30 @@ def main():
         sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         if "state_dict" in sd:
             sd = sd["state_dict"]
-        for k, v in sd.items():
-            if "main_model.profile_head.conv.weight" in k:
-                model.profile_heads[ct_idx].conv.weight.data.copy_(v)
-            elif "main_model.profile_head.conv.bias" in k:
-                model.profile_heads[ct_idx].conv.bias.data.copy_(v)
-            elif "main_model.count_head.fc.weight" in k:
-                model.count_heads[ct_idx].fc.weight.data.copy_(v)
-            elif "main_model.count_head.fc.bias" in k:
-                model.count_heads[ct_idx].fc.bias.data.copy_(v)
+        if args.separate_heads:
+            for k, v in sd.items():
+                if "main_model.profile_head.conv.weight" in k:
+                    model.profile_heads[ct_idx].conv.weight.data.copy_(v)
+                elif "main_model.profile_head.conv.bias" in k:
+                    model.profile_heads[ct_idx].conv.bias.data.copy_(v)
+                elif "main_model.count_head.fc.weight" in k:
+                    model.count_heads[ct_idx].fc.weight.data.copy_(v)
+                elif "main_model.count_head.fc.bias" in k:
+                    model.count_heads[ct_idx].fc.bias.data.copy_(v)
+        else:
+            for k, v in sd.items():
+                if "main_model.profile_head.conv.weight" in k:
+                    model.profile_head.conv.weight.data[ct_idx] = v.squeeze(0)
+                elif "main_model.profile_head.conv.bias" in k:
+                    model.profile_head.conv.bias.data[ct_idx] = v.item()
+                elif "main_model.count_head.fc.weight" in k:
+                    model.count_head.fc.weight.data[ct_idx] = v.squeeze(0)
+                elif "main_model.count_head.fc.bias" in k:
+                    model.count_head.fc.bias.data[ct_idx] = v.item()
         n_heads_loaded += 1
         print(f"  Transferred heads from {ct}")
     print(f"  Initialized {n_heads_loaded}/{len(CELL_TYPES)} head channels")
 
-    # Everything is trainable — encoder adapts to all cell types
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {n_params:,} (all trainable)")
 
@@ -173,6 +190,8 @@ def main():
         learning_rate=multi_cell_lr,
         profile_weight=train_cfg["profile_weight"],
         count_weight=count_weight,
+        uncertainty_weighting=args.uncertainty_weighting,
+        ortho_weight=args.ortho_weight,
     )
 
     # Callbacks
@@ -194,10 +213,11 @@ def main():
     if wandb_cfg.get("project"):
         try:
             from pytorch_lightning.loggers import WandbLogger
+            variant_name = "_".join(variants) if variants else "base"
             logger = WandbLogger(
                 project=wandb_cfg["project"],
                 entity=wandb_cfg.get("entity"),
-                name="multi_cell_chrombpnet",
+                name=f"multi_cell_{variant_name}",
                 save_dir=str(out_dir),
             )
         except ImportError:

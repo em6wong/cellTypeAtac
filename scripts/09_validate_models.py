@@ -110,14 +110,26 @@ def load_multi_cell_model(
     checkpoint_path: str,
     device: str = "cpu",
 ) -> MultiCellChromBPNet:
-    """Load a multi-cell ChromBPNet from checkpoint."""
+    """Load a multi-cell ChromBPNet from checkpoint.
+
+    Auto-detects variant flags (separate_heads, task_norms) from checkpoint keys.
+    """
     state = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if "state_dict" in state:
         state_dict = state["state_dict"]
     else:
         state_dict = state
 
-    model = MultiCellChromBPNet(num_cell_types=len(CELL_TYPES))
+    # Auto-detect variant from checkpoint keys
+    all_keys = " ".join(state_dict.keys())
+    separate_heads = "profile_heads." in all_keys
+    task_norms = "task_norms." in all_keys
+
+    model = MultiCellChromBPNet(
+        num_cell_types=len(CELL_TYPES),
+        separate_heads=separate_heads,
+        task_norms=task_norms,
+    )
 
     model_state = {k.replace("model.", "", 1): v for k, v in state_dict.items()
                    if k.startswith("model.")}

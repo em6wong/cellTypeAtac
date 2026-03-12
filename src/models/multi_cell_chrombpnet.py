@@ -1,18 +1,19 @@
 """Multi-cell-type ChromBPNet model (Stage 3).
 
-Shared encoder with separate per-cell-type output heads.
-Each cell type gets its own ProfileHead and CountHead, allowing
-independent feature selection from the shared encoder.
-Task-specific normalization (GroupNorm) before each head gives
-each cell type a different view of the shared features.
+Shared encoder with multi-output heads (Enformer/Scooby-style).
+No cell-type conditioning in the encoder — the encoder learns general
+DNA sequence features, and each head channel specializes for one cell type.
 
-Architecture:
+Supports variants via constructor flags:
+  - separate_heads: independent ProfileHead/CountHead per cell type
+  - task_norms: per-cell-type GroupNorm before heads
+
+Architecture (default):
     Input: 2114bp one-hot DNA (4, 2114)
     → Stem: Conv1d(4→512, k=21, valid) + ReLU
     → Dilated Conv Stack: 8 layers (d=2..256), same as single-cell ChromBPNet
-    → Per-cell-type GroupNorm(1, 512)
-    → Per-cell-type ProfileHead: Conv1d(512→1, k=75, valid)
-    → Per-cell-type CountHead: AdaptiveAvgPool1d(1) → Linear(512→1)
+    → Profile Head: Conv1d(512→n_cell_types, k=75, valid)
+    → Count Head: AdaptiveAvgPool1d(1) → Linear(512→n_cell_types)
 """
 
 import torch
@@ -23,16 +24,7 @@ from .layers import ConvBlock, DilatedConvStack, ProfileHead, CountHead
 
 
 class MultiCellChromBPNet(nn.Module):
-    """Multi-cell-type ChromBPNet with shared encoder and separate heads.
-
-    Each cell type gets:
-    - Its own GroupNorm (task-specific normalization)
-    - Its own ProfileHead (512→1, k=75)
-    - Its own CountHead (512→1)
-
-    This is strictly more expressive than a single multi-channel head,
-    and task-specific normalization allows each cell type to amplify
-    different features from the shared encoder.
+    """Multi-cell-type ChromBPNet with shared encoder and output heads.
 
     Args:
         num_cell_types: Number of cell types (default 5).
@@ -44,6 +36,8 @@ class MultiCellChromBPNet(nn.Module):
         dilated_kernel_size: Dilated conv kernel size (default 3).
         profile_kernel_size: Profile head kernel size (default 75).
         dropout: Dropout rate (default 0.0).
+        separate_heads: If True, use independent heads per cell type.
+        task_norms: If True, add per-cell-type GroupNorm before heads.
     """
 
     def __init__(
@@ -57,11 +51,15 @@ class MultiCellChromBPNet(nn.Module):
         dilated_kernel_size: int = 3,
         profile_kernel_size: int = 75,
         dropout: float = 0.0,
+        separate_heads: bool = False,
+        task_norms: bool = False,
     ):
         super().__init__()
         self.num_cell_types = num_cell_types
         self.input_length = input_length
         self.output_length = output_length
+        self.use_separate_heads = separate_heads
+        self.use_task_norms = task_norms
 
         # Shared encoder (same as single-cell ChromBPNet)
         self.stem = ConvBlock(4, stem_channels, stem_kernel_size, dropout=dropout)
@@ -72,19 +70,29 @@ class MultiCellChromBPNet(nn.Module):
             dropout=dropout,
         )
 
-        # Per-cell-type normalization + heads
-        self.task_norms = nn.ModuleList([
-            nn.GroupNorm(1, stem_channels) for _ in range(num_cell_types)
-        ])
-        self.profile_heads = nn.ModuleList([
-            ProfileHead(stem_channels, num_outputs=1,
-                        output_length=output_length, kernel_size=profile_kernel_size)
-            for _ in range(num_cell_types)
-        ])
-        self.count_heads = nn.ModuleList([
-            CountHead(stem_channels, num_outputs=1)
-            for _ in range(num_cell_types)
-        ])
+        # Task-specific normalization (optional)
+        if task_norms:
+            self.task_norms = nn.ModuleList([
+                nn.GroupNorm(1, stem_channels) for _ in range(num_cell_types)
+            ])
+
+        # Output heads
+        if separate_heads:
+            self.profile_heads = nn.ModuleList([
+                ProfileHead(stem_channels, num_outputs=1,
+                            output_length=output_length, kernel_size=profile_kernel_size)
+                for _ in range(num_cell_types)
+            ])
+            self.count_heads = nn.ModuleList([
+                CountHead(stem_channels, num_outputs=1)
+                for _ in range(num_cell_types)
+            ])
+        else:
+            self.profile_head = ProfileHead(
+                stem_channels, num_outputs=num_cell_types,
+                output_length=output_length, kernel_size=profile_kernel_size,
+            )
+            self.count_head = CountHead(stem_channels, num_outputs=num_cell_types)
 
     def forward(
         self,
@@ -103,17 +111,33 @@ class MultiCellChromBPNet(nn.Module):
         x = self.stem(sequence)
         x = self.dilated_convs(x)
 
-        profiles = []
-        counts = []
-        for ct_idx in range(self.num_cell_types):
-            x_ct = self.task_norms[ct_idx](x)
-            # Squeeze single output channel: (batch, 1, length) → (batch, length)
-            profiles.append(self.profile_heads[ct_idx](x_ct).squeeze(1))
-            # Squeeze single output: (batch, 1) → (batch,)
-            counts.append(self.count_heads[ct_idx](x_ct).squeeze(-1))
+        if self.use_separate_heads:
+            profiles = []
+            counts = []
+            for ct_idx in range(self.num_cell_types):
+                x_ct = self.task_norms[ct_idx](x) if self.use_task_norms else x
+                profiles.append(self.profile_heads[ct_idx](x_ct).squeeze(1))
+                counts.append(self.count_heads[ct_idx](x_ct).squeeze(-1))
+            profile = torch.stack(profiles, dim=1)
+            count = torch.stack(counts, dim=1)
+        else:
+            if self.use_task_norms:
+                # With shared heads + task norms: run head once per norm
+                profiles = []
+                counts = []
+                for ct_idx in range(self.num_cell_types):
+                    x_ct = self.task_norms[ct_idx](x)
+                    # Use only this cell type's channel from the shared head
+                    p = self.profile_head(x_ct)[:, ct_idx, :]
+                    c = self.count_head(x_ct)[:, ct_idx]
+                    profiles.append(p)
+                    counts.append(c)
+                profile = torch.stack(profiles, dim=1)
+                count = torch.stack(counts, dim=1)
+            else:
+                profile = self.profile_head(x)
+                count = self.count_head(x)
 
-        profile = torch.stack(profiles, dim=1)  # (batch, n_ct, output_length)
-        count = torch.stack(counts, dim=1)       # (batch, n_ct)
         return {"profile": profile, "count": count}
 
     def forward_single_celltype(
@@ -121,15 +145,7 @@ class MultiCellChromBPNet(nn.Module):
         sequence: torch.Tensor,
         cell_type_idx: int,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass returning a single cell type's output.
-
-        Args:
-            sequence: One-hot DNA (batch, 4, input_length).
-            cell_type_idx: Index of the cell type to return.
-
-        Returns:
-            Dict with 'profile' (batch, output_length) and 'count' (batch,).
-        """
+        """Forward pass returning a single cell type's output."""
         out = self.forward(sequence)
         return {
             "profile": out["profile"][:, cell_type_idx, :],
